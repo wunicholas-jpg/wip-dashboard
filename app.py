@@ -2,93 +2,130 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 設置網頁
 st.set_page_config(page_title="WIP Dashboard", layout="wide")
-st.title("🚀 ZC13 WIP 智能管理面板")
+st.title("🏭 ATE FT WIP 整合管理面板 (ZC13)")
 
-# 自動修正重複標題的函數
-def fix_columns(columns):
-    cols = []
-    seen = {}
-    for i, c in enumerate(columns):
-        c = str(c).strip() if pd.notnull(c) and str(c).strip() != "" else f"Unnamed_{i}"
-        if c in seen:
-            seen[c] += 1
-            cols.append(f"{c}_{seen[c]}")
-        else:
-            seen[c] = 0
-            cols.append(c)
-    return cols
-
-uploaded_file = st.file_uploader("📥 上傳 ZC13 WIP 原始檔 (XLSX)", type=['xlsx'])
+uploaded_file = st.file_uploader("📥 請上傳最新 WIP Excel 檔案", type=['xlsx'])
 
 if uploaded_file:
     try:
-        # 讀取所有數據
-        df_raw = pd.read_excel(uploaded_file, header=None)
-        
-        # --- 區塊 1: WIP Trend (找 Process Step) ---
-        wip_idx = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Process Step", na=False)].index
-        if not wip_idx.empty:
-            start = wip_idx[0]
-            # 找到下一個 "Sum" 作為結束
-            sum_idx = df_raw.iloc[start:].index[df_raw.iloc[start:, 0].astype(str).str.contains("Sum", na=False)]
-            end = sum_idx[0] if not sum_idx.empty else start + 30
+        with st.spinner("掃描 Excel 全部分頁與數據中..."):
+            # 【關鍵修正】讀取 Excel 中的 "所有" 分頁 (Sheets)
+            xls = pd.ExcelFile(uploaded_file)
+            sheet_names = xls.sheet_names
             
-            df_wip = df_raw.iloc[start:end].copy()
-            df_wip.columns = fix_columns(df_wip.iloc[0])
-            df_wip = df_wip[2:].reset_index(drop=True)
-            
-            # 數值轉型
-            target_col = df_wip.columns[1] # 抓最新日期那一欄
-            df_wip[target_col] = pd.to_numeric(df_wip[target_col], errors='coerce').fillna(0)
-            
-            st.subheader(f"📊 各站點 WIP 分佈 ({target_col})")
-            fig = px.bar(df_wip, x=df_wip.columns[0], y=target_col, color=df_wip.columns[0], text_auto='.2s')
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # --- 區塊 2: DRAM Status (搜尋全表關鍵字) ---
-        st.subheader("🗂️ DRAM 規格拆解 (16G / 12G)")
-        dram_keywords = ['MU16G', 'SS16G', 'HY12G', 'SS12G']
-        dram_data = []
-        
-        # 遍歷整張表尋找 DRAM 關鍵字
-        for r in range(len(df_raw)):
-            row_values = df_raw.iloc[r].astype(str).tolist()
-            for i, val in enumerate(row_values):
-                for key in dram_keywords:
-                    if key in val:
-                        # 假設數字在關鍵字右邊那一格
-                        qty = pd.to_numeric(df_raw.iloc[r, i+1], errors='coerce') if i+1 < len(df_raw.columns) else 0
-                        dram_data.append({"Spec": key, "Qty": qty or 0})
-        
-        if dram_data:
-            df_dram = pd.DataFrame(dram_data).groupby("Spec").sum().reset_index()
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.dataframe(df_dram, use_container_width=True)
-            with c2:
-                fig_pie = px.pie(df_dram, names='Spec', values='Qty', hole=0.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.warning("找不到 DRAM 數據 (MU16G/SS12G)，請確認 Excel 內容。")
+            df_wip_trend = None
+            dram_dict = {'MU16G': 0, 'SS16G': 0, 'HY12G': 0, 'SS12G': 0}
+            df_demand = None
 
-        # --- 區塊 3: Demand (找 Accum) ---
-        st.subheader("📦 出貨需求與 AI 風險分析")
-        demand_idx = df_raw[df_raw.apply(lambda r: r.astype(str).str.contains("Accum").any(), axis=1)].index
-        if not demand_idx.empty:
-            df_demand = df_raw.iloc[demand_idx[0]:demand_idx[0]+15].dropna(how='all', axis=1)
-            df_demand.columns = fix_columns(df_demand.iloc[0])
-            st.dataframe(df_demand[1:], use_container_width=True)
+            # --- 核心邏輯：像雷達一樣掃描所有分頁 ---
+            for sheet in sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet, header=None)
+                
+                # 1. 尋找上半部 WIP 趨勢 (找 Process Step)
+                if df_wip_trend is None:
+                    wip_mask = df.apply(lambda r: r.astype(str).str.contains('Process Step', case=False, na=False).any(), axis=1)
+                    if wip_mask.any():
+                        wip_start = wip_mask.idxmax()
+                        date_row = wip_start - 1 if wip_start > 0 else wip_start
+                        
+                        # 擷取到出現 Sum 為止
+                        end_mask = df.iloc[wip_start:].apply(lambda r: r.astype(str).str.contains('Sum|TTL', case=False, na=False).any(), axis=1)
+                        wip_end = end_mask.idxmax() if end_mask.any() else wip_start + 40
+                        
+                        raw_wip = df.iloc[date_row:wip_end].copy()
+                        
+                        # 清洗標題 (解決重複欄位與時間格式)
+                        cols = []
+                        for c in raw_wip.iloc[0]:
+                            cstr = str(c).split(' ')[0]
+                            if cstr == 'nan': cstr = 'Station'
+                            cols.append(cstr)
+                        raw_wip.columns = [f"{c}_{i}" if cols.count(c)>1 else c for i, c in enumerate(cols)]
+                        
+                        # 去除雜訊
+                        df_wip_trend = raw_wip.iloc[2:].dropna(subset=[raw_wip.columns[0]])
+                        df_wip_trend = df_wip_trend[~df_wip_trend[df_wip_trend.columns[0]].astype(str).str.contains('nan|Sum|TTL')]
+
+                # 2. 尋找中部 DRAM 數據 (全域掃描關鍵字)
+                for key in dram_dict.keys():
+                    mask = df.apply(lambda r: r.astype(str).str.contains(key, case=False, na=False), axis=1)
+                    if mask.any().any():
+                        for r_idx, row in df[mask.any(axis=1)].iterrows():
+                            for c_idx, val in row.items():
+                                if key in str(val):
+                                    # 抓取右邊一格的數字
+                                    try:
+                                        qty = pd.to_numeric(df.iloc[r_idx, c_idx+1], errors='coerce')
+                                        if pd.notna(qty): dram_dict[key] = max(dram_dict[key], qty)
+                                    except:
+                                        pass
+
+                # 3. 尋找下半部 Demand (找 Accum 或是 箭頭符號)
+                if df_demand is None:
+                    # 搜尋包含 'Accum' 或 dates like '3/31' 的列
+                    demand_mask = df.apply(lambda r: r.astype(str).str.contains('Accum|-->|Receiving', case=False, na=False).any(), axis=1)
+                    if demand_mask.any():
+                        d_start = demand_mask.idxmax()
+                        # 抓取該表格
+                        raw_demand = df.iloc[max(0, d_start-1):d_start+20].dropna(how='all', axis=1).dropna(how='all', axis=0)
+                        
+                        # 確保標題不重複
+                        d_cols = [str(c) for c in raw_demand.iloc[0]]
+                        raw_demand.columns = [f"{c}_{i}" if d_cols.count(c)>1 else c for i, c in enumerate(d_cols)]
+                        df_demand = raw_demand.iloc[1:].reset_index(drop=True)
+
+            # ========================================
+            # 介面渲染：Dashboard 正式呈現
+            # ========================================
             
-            # --- AI Agent 模擬 ---
-            st.info("🤖 **AI Risk Assessment**")
-            st.write("根據當前 WIP 與 Demand 數據：")
-            total_wip = df_wip[target_col].sum()
-            st.write(f"- 當前總 WIP: **{int(total_wip):,}**")
-            st.write("- **出貨風險評估**：FT 站點目前水位正常，但 IQC 站點有堆積現象，建議加速流轉。")
-        
+            # --- 第一部分：歷史趨勢 ---
+            if df_wip_trend is not None:
+                st.markdown("### 📈 第一部分：站點 WIP 歷史趨勢 (3/2 ~ 當前)")
+                
+                station_col = df_wip_trend.columns[0]
+                # 抓取所有日期欄位 (例如包含 2026 的)
+                date_cols = [c for c in df_wip_trend.columns if '202' in str(c)]
+                
+                if date_cols:
+                    for c in date_cols:
+                        df_wip_trend[c] = pd.to_numeric(df_wip_trend[c], errors='coerce').fillna(0)
+                    
+                    # 轉換為折線圖所需的長表格式
+                    df_melt = df_wip_trend.melt(id_vars=[station_col], value_vars=date_cols, var_name='Date', value_name='Qty')
+                    df_melt['Date'] = pd.to_datetime(df_melt['Date'], errors='coerce')
+                    df_melt = df_melt.dropna(subset=['Date']).sort_values('Date')
+                    df_melt = df_melt[df_melt['Qty'] > 0] # 過濾掉 0 讓圖表更乾淨
+                    
+                    # 繪製趨勢折線圖
+                    fig_trend = px.line(df_melt, x='Date', y='Qty', color=station_col, markers=True,
+                                        title="每日各站點 WIP 數量流動趨勢")
+                    st.plotly_chart(fig_trend, use_container_width=True)
+
+            st.markdown("---")
+            
+            # --- 第二部分與第三部分並排呈現 ---
+            col1, col2 = st.columns([1, 1.5])
+            
+            with col1:
+                st.markdown("### 🗂️ 第二部分：當日 DRAM WIP")
+                df_dram = pd.DataFrame(list(dram_dict.items()), columns=['Spec', 'Qty'])
+                df_dram = df_dram[df_dram['Qty'] > 0]
+                
+                if not df_dram.empty:
+                    fig_pie = px.pie(df_dram, names='Spec', values='Qty', hole=0.4)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.warning("⚠️ 無法找到 MU16G, SS16G 等數據")
+
+            with col2:
+                st.markdown("### 📦 第三部分：出貨需求 (Demand)")
+                if df_demand is not None and not df_demand.empty:
+                    st.dataframe(df_demand, use_container_width=True)
+                else:
+                    st.warning("⚠️ 掃描了所有分頁，但找不到出貨需求表格。")
+                    
     except Exception as e:
-        st.error(f"解析發生問題：{e}")
-        st.write("原始數據預覽：")
-        st.dataframe(df_raw.head(50))
+        st.error("解析發生嚴重錯誤，請截圖下方紅色文字給我看：")
+        import traceback
+        st.code(traceback.format_exc())
