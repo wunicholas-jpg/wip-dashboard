@@ -4,20 +4,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # --- 1. Page Configuration & Professional Color Palette ---
-st.set_page_config(page_title="KYEC WIP Intelligent Dashboard", layout="wide")
+st.set_page_config(page_title="KYEC WIP E2E Management Dashboard", layout="wide")
 
 G_BLUE = "#4285F4"
 G_GREEN = "#34A853"
 G_YELLOW = "#FBBC05"
 G_GRAY = "#70757a"
-G_RED = "#EA4335" # For Alert Only
+G_RED = "#EA4335" # Alert Only
 
-DRAM_COLORS = {
-    "MU16G": G_BLUE,
-    "SS16G": G_GREEN,
-    "HY12G": G_YELLOW,
-    "SS12G": G_GRAY
-}
+DRAM_COLORS = {"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY}
 
 FLOW_STATIONS = [
     "Receiving", "IQC", "LS1 QC1", "FT CORR", "FT1", "LS QC2", 
@@ -31,7 +26,14 @@ def to_num(x):
         return float(str(x).replace(',', '').strip())
     except: return 0.0
 
-st.title("🏭 ZC13 ATE FT Intelligent Management Dashboard")
+def format_date(d):
+    """Force date string to YYYY-MM-DD format only"""
+    try:
+        return str(pd.to_datetime(d).date())
+    except:
+        return str(d).split(' ')[0]
+
+st.title("📊 KYEC WIP E2E Management Dashboard")
 st.markdown("---")
 
 # 0) Production Flow Visualization
@@ -57,7 +59,7 @@ if uploaded_file:
         if "History_WIP" in xls.sheet_names:
             st.subheader("📈 Part 1: WIP Historical Trends (Last 7 Days)")
             df_h = pd.read_excel(xls, sheet_name="History_WIP", header=None)
-            h_dates = [str(d).split(' ')[0] for d in df_h.iloc[0, 1:] if pd.notnull(d)]
+            h_dates = [format_date(d) for d in df_h.iloc[0, 1:] if pd.notnull(d)]
             
             h_list = []
             for i in range(1, len(df_h)):
@@ -70,7 +72,7 @@ if uploaded_file:
             recent_dates = h_dates[:7]
             
             top_5 = df_hist_full.sort_values("Total", ascending=False).head(5)["Station"].tolist()
-            selected = st.multiselect("Select Stations (Chart displays last 7 days):", df_hist_full["Station"].unique(), default=top_5)
+            selected = st.multiselect("Select Stations:", df_hist_full["Station"].unique(), default=top_5)
             
             df_plot = df_hist_full[df_hist_full["Station"].isin(selected)][["Station"] + recent_dates]
             df_melt = df_plot.melt(id_vars="Station", var_name="Date", value_name="Qty")
@@ -80,9 +82,6 @@ if uploaded_file:
                           height=400, title="Daily Station Level Changes")
             fig_h.update_xaxes(type='category')
             st.plotly_chart(fig_h, use_container_width=True)
-            
-            with st.expander("📄 View Historical Raw Data Table"):
-                st.dataframe(df_hist_full.drop(columns="Total"), use_container_width=True)
 
         # =========================================================
         # Part 2: Current WIP Status
@@ -91,7 +90,6 @@ if uploaded_file:
         if "Current_WIP" in xls.sheet_names:
             st.subheader("🗂️ Part 2: Current WIP Distribution by DRAM Type")
             df_c_raw = pd.read_excel(xls, sheet_name="Current_WIP", header=None)
-            
             curr_data = []
             for i in range(len(df_c_raw)):
                 label = str(df_c_raw.iloc[i, 0]).strip()
@@ -103,71 +101,51 @@ if uploaded_file:
             df_curr = pd.DataFrame(curr_data)
             df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
             df_curr = df_curr.sort_values('Station')
-
-            fig_c = px.bar(df_curr, x="Station", y="Qty", color="DRAM Type", 
-                          color_discrete_map=DRAM_COLORS,
-                          title="Real-time Inventory Level (Sorted by Process Flow)", barmode="group", text_auto='.2s')
-            st.plotly_chart(fig_c, use_container_width=True)
             
-            with st.expander("📄 View Current WIP Raw Data"):
-                df_pivot = df_curr.pivot(index='DRAM Type', columns='Station', values='Qty')
-                st.dataframe(df_pivot[FLOW_STATIONS], use_container_width=True)
+            fig_c = px.bar(df_curr, x="Station", y="Qty", color="DRAM Type", 
+                          color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
+            st.plotly_chart(fig_c, use_container_width=True)
 
         # =========================================================
-        # Part 3: Shipment Demand
+        # Part 3: Shipment Requirement
         # =========================================================
         st.markdown("---")
         if "Ship Demand" in xls.sheet_names:
-            st.subheader("📦 Part 3: Shipment Demand (By Location & DRAM Type)")
+            st.subheader("📦 Part 3: Shipment Requirement (By Location & DRAM Type)")
             df_d_raw = pd.read_excel(xls, sheet_name="Ship Demand", header=None)
-            
-            d_dates = [str(d).split(' ')[0] for d in df_d_raw.iloc[3, 3:12] if pd.notnull(d)]
+            d_dates = [format_date(d) for d in df_d_raw.iloc[3, 3:12] if pd.notnull(d)]
             
             demand_rows = []
             current_spec = ""
             for i in range(4, len(df_d_raw)):
                 row_spec = str(df_d_raw.iloc[i, 1]).strip()
-                if row_spec in specs:
-                    current_spec = row_spec
-                
+                if row_spec in specs: current_spec = row_spec
                 place = str(df_d_raw.iloc[i, 2]).strip()
                 if place in ["FIHCN", "FIHVN", "HKDC"]:
                     for idx, d_date in enumerate(d_dates):
                         qty = to_num(df_d_raw.iloc[i, 3+idx])
                         if qty > 0:
-                            demand_rows.append({
-                                "Date": d_date, 
-                                "DRAM Type": current_spec, 
-                                "Place": place, 
-                                "Qty": qty
-                            })
+                            demand_rows.append({"Date": d_date, "DRAM Type": current_spec, "Place": place, "Qty": qty})
             
             df_demand = pd.DataFrame(demand_rows)
-            
             d_tabs = st.tabs(specs)
             for i, spec in enumerate(specs):
                 with d_tabs[i]:
                     df_spec_d = df_demand[df_demand["DRAM Type"] == spec]
                     if not df_spec_d.empty:
-                        # Clean Date Strings for Chart
-                        df_spec_d["Date_Label"] = df_spec_d["Date"].apply(lambda x: x.split(" ")[0])
-                        fig_spec_d = px.bar(df_spec_d, x="Date_Label", y="Qty", color="Place", 
-                                           barmode="group",
+                        fig_spec_d = px.bar(df_spec_d, x="Date", y="Qty", color="Place", 
+                                           barmode="group", text_auto='.3s', # Added Data Labels
                                            color_discrete_map={"FIHCN": G_BLUE, "FIHVN": G_GREEN, "HKDC": G_YELLOW},
-                                           title=f"{spec} Shipment Requirement Details")
-                        fig_spec_d.update_layout(xaxis_title="Ship Date")
+                                           title=f"{spec} Shipment Requirement by Location")
                         st.plotly_chart(fig_spec_d, use_container_width=True)
-                    else:
-                        st.info(f"No active shipment plan for {spec}.")
 
         # =========================================================
         # Part 4: AI Agent Analysis (Inventory Runway Model)
         # =========================================================
         st.markdown("---")
-        st.error("🤖 **AI Agent: Shipment Gap Analysis (PACK Stock Runway Model)**")
+        st.error("🤖 AI Agent: Shipment Gap Analysis (PACK Stock Runway)")
         
         overall_summary = []
-
         if not df_curr.empty and not df_demand.empty:
             pack_stock = df_curr[df_curr["Station"] == "PACK"].set_index("DRAM Type")["Qty"].to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
@@ -176,54 +154,51 @@ if uploaded_file:
                 st.markdown(f"#### 🔍 Runway Analysis: {spec}")
                 current_runway = pack_stock.get(spec, 0)
                 analysis_results = []
-                
                 for d_date in unique_dates:
                     d_qty = df_demand[(df_demand["Date"] == d_date) & (df_demand["DRAM Type"] == spec)]["Qty"].sum()
                     if d_qty == 0: continue
-                    
                     old_bal = current_runway
                     current_runway -= d_qty
-                    
                     status = "✅ Sufficient" if current_runway >= 0 else f"🚨 GAP: {int(abs(current_runway)):,}"
-                    
-                    # Store for summary
-                    if current_runway < 0:
-                        overall_summary.append(f"CRITICAL: {spec} will have a shortage of {int(abs(current_runway)):,} on {d_date}.")
-
-                    analysis_results.append({
-                        "Ship Date": d_date,
-                        "Initial Stock": int(old_bal),
-                        "Demand Qty": int(d_qty),
-                        "End Balance": int(current_runway),
-                        "Status": status
-                    })
+                    if current_runway < 0: overall_summary.append(f"CRITICAL: {spec} shortage of {int(abs(current_runway)):,} on {d_date}.")
+                    analysis_results.append({"Ship Date": d_date, "Initial Stock": int(old_bal), "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status})
                 
                 if analysis_results:
                     res_df = pd.DataFrame(analysis_results)
                     c1, c2 = st.columns([2, 1])
                     with c1:
                         res_df["BarColor"] = res_df["End Balance"].apply(lambda x: G_RED if x < 0 else G_BLUE)
-                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", 
-                                           title=f"{spec} Inventory Projection (Negative = Shortage)",
-                                           text_auto='.2s')
+                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Balance Runway")
                         fig_runway.update_traces(marker_color=res_df["BarColor"])
-                        fig_runway.add_hline(y=0, line_dash="dash", line_color="black")
                         st.plotly_chart(fig_runway, use_container_width=True)
                     with c2:
-                        def style_gap(val):
-                            color = G_RED if '🚨' in str(val) else 'black'
-                            return f'color: {color}; font-weight: bold'
-                        st.table(res_df.drop(columns=["BarColor"]).style.applymap(style_gap, subset=['Status']))
+                        st.table(res_df.drop(columns=["BarColor"]))
 
-            # --- AI Decision Summary (TL;DR) ---
-            st.markdown("---")
-            st.info("💡 **AI Decision Summary (TL;DR)**")
+            st.info("💡 AI Decision Summary (TL;DR)")
             if overall_summary:
-                for msg in overall_summary:
-                    st.write(f"• {msg}")
-                st.warning("Recommendation: Accelerate WIP flow from FT1 and FQC stations to PACK immediately to meet upcoming demand.")
-            else:
-                st.success("Analysis Complete: Current PACK inventory is sufficient to cover all scheduled shipments through the next 8 weeks.")
+                for msg in overall_summary: st.write(f"• {msg}")
+            else: st.success("No immediate shortages detected.")
+
+        # =========================================================
+        # NEXT STEP: AI Chat Interrogator
+        # =========================================================
+        st.markdown("---")
+        st.subheader("💬 Interactive AI Data Interrogator")
+        user_query = st.text_input("Ask a question about the WIP or Demand data:", placeholder="e.g., Which DRAM has the most severe shortage?")
+        
+        if user_query:
+            with st.chat_message("assistant"):
+                # Basic context injection logic
+                if "shortage" in user_query.lower() or "risk" in user_query.lower():
+                    if overall_summary:
+                        st.write(f"Based on the runway analysis, the primary risks are: {', '.join(overall_summary)}. I recommend focusing on moving WIP to the PACK station for these specs.")
+                    else:
+                        st.write("Current analysis shows no shortages in the PACK station. Your inventory runway is healthy.")
+                elif "total" in user_query.lower():
+                    total_wip = df_curr["Qty"].sum()
+                    st.write(f"The total WIP across all stations is currently {int(total_wip):,}. {df_curr.groupby('DRAM Type')['Qty'].sum().to_dict()} is the breakdown by DRAM.")
+                else:
+                    st.write("I am monitoring the E2E flow. Your biggest WIP accumulation is currently at the " + str(df_curr.loc[df_curr['Qty'].idxmax(), 'Station']) + " station.")
 
     except Exception as e:
         st.error(f"Analysis Failed: {e}")
