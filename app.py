@@ -2,10 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="WIP Dashboard", layout="wide")
-
-st.title("🏭 ATE FT WIP 智能管理系統 (ZC13)")
-st.info("請直接上傳原始 Excel 檔案，系統將自動解析三個區塊。")
+st.set_page_config(page_title="ZC13 WIP & Demand Dashboard", layout="wide")
+st.title("🏭 ZC13 ATE FT WIP 智能管理面板")
 
 # 17 個標準站點定義
 TARGET_STATIONS = [
@@ -14,105 +12,116 @@ TARGET_STATIONS = [
     "TR", "FQC", "PACK", "MP ship"
 ]
 
-def clean_num(x):
+def to_num(x):
     try:
         return float(str(x).replace(',', '').strip())
     except:
         return 0.0
 
-# --- 唯一上傳按鈕 ---
-uploaded_file = st.file_uploader("📥 請上傳 ZC13 WIP 原始 Excel (.xlsx)", type=['xlsx'])
+uploaded_file = st.file_uploader("📥 請上傳原始 ZC13 WIP (.xlsx) 檔案", type=['xlsx'])
 
 if uploaded_file:
     try:
-        # 使用 ExcelFile 讀取，以便同時操作多個 Sheet
         xls = pd.ExcelFile(uploaded_file)
-        
-        # ---------------------------------------------------------
-        # 第一部分：WIP 歷史趨勢 (由第一個 Sheet 讀取)
-        # ---------------------------------------------------------
+        # 讀取主要 WIP Sheet (假設是第一張)
         df_wip_raw = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=None)
         
-        # 抓取日期 (Row 0)
-        dates = [str(d).split(' ')[0] for d in df_wip_raw.iloc[0, 1:17].tolist() if pd.notnull(d)]
-        
-        # 抓取 17 站點數據
-        wip_history = []
-        for i in range(len(df_wip_raw)):
-            row_name = str(df_wip_raw.iloc[i, 0]).strip()
-            if row_name in TARGET_STATIONS:
-                vals = [clean_num(v) for v in df_wip_raw.iloc[i, 1:len(dates)+1].tolist()]
-                wip_history.append([row_name] + vals)
-        
-        df_hist = pd.DataFrame(wip_history, columns=["Station"] + dates)
-        
+        # ---------------------------------------------------------
+        # 1. 第一部分：歷史趨勢 (全日期抓取)
+        # ---------------------------------------------------------
         st.subheader("📈 第一部分：站點 WIP 歷史趨勢 (3/02 ~ 3/23)")
-        # 轉換為圖表格式
+        
+        # 尋找所有日期列 (第一列)
+        date_row = df_wip_raw.iloc[0].astype(str)
+        date_indices = [i for i, val in enumerate(date_row) if "2026" in val]
+        dates = [date_row[i].split(' ')[0] for i in date_indices]
+        
+        hist_data = []
+        for i in range(len(df_wip_raw)):
+            st_name = str(df_wip_raw.iloc[i, 0]).strip()
+            if st_name in TARGET_STATIONS:
+                row_vals = [to_num(df_wip_raw.iloc[i, idx]) for idx in date_indices]
+                hist_data.append([st_name] + row_vals)
+        
+        df_hist = pd.DataFrame(hist_data, columns=["Station"] + dates)
+        
+        # 繪製折線圖 (按日期排序)
         df_melt = df_hist.melt(id_vars="Station", var_name="Date", value_name="Qty")
         df_melt["Date"] = pd.to_datetime(df_melt["Date"])
+        df_melt = df_melt.sort_values("Date")
         
         fig_trend = px.line(df_melt, x="Date", y="Qty", color="Station", markers=True, height=500)
         st.plotly_chart(fig_trend, use_container_width=True)
 
         # ---------------------------------------------------------
-        # 第二部分：今日 WIP 狀態 by DRAM (由 'Station -ship delta' 讀取)
+        # 2. 第二部分：今日 WIP 狀態 (by 站點 by DRAM)
         # ---------------------------------------------------------
         st.markdown("---")
-        latest_date = dates[0]
-        st.subheader(f"🗂️ 第二部分：今日 ({latest_date}) WIP 狀態 by DRAM (16G vs 12G)")
+        st.subheader(f"🗂️ 第二部分：今日 (3/23) 各站點數據 (16G vs 12G)")
         
-        # 自動尋找包含 delta 的 Sheet
-        delta_sheet = [s for s in xls.sheet_names if 'delta' in s.lower()][0]
-        df_delta = pd.read_excel(xls, sheet_name=delta_sheet, header=None)
+        # 尋找包含 'delta' 的需求分頁
+        delta_sheet_name = [s for s in xls.sheet_names if 'delta' in s.lower()][0]
+        df_delta = pd.read_excel(xls, sheet_name=delta_sheet_name, header=None)
         
-        # 依照您的 Excel 座標抓取今日數據 (Row 8)
-        # 16G: Col 1~16, 12G: Col 31~46
-        dram_comp = []
-        for i, st_name in enumerate(TARGET_STATIONS[1:]): # 跳過 TSMC 站
-            val_16g = clean_num(df_delta.iloc[8, i+1])
-            val_12g = clean_num(df_delta.iloc[8, i+31])
-            dram_comp.append({"Station": st_name, "DRAM": "16G", "Qty": val_16g})
-            dram_comp.append({"Station": st_name, "DRAM": "12G", "Qty": val_12g})
+        # 根據 Excel 實際位置: 16G 在左側 (Row 8, Col 1-16), 12G 在右側 (Row 8, Col 31-46)
+        dram_compare = []
+        for i, st_name in enumerate(TARGET_STATIONS[1:]): # 跳過第一站
+            qty_16g = to_num(df_delta.iloc[8, i+1])
+            qty_12g = to_num(df_delta.iloc[8, i+31])
+            dram_compare.append({"Station": st_name, "DRAM": "16G", "Qty": qty_16g})
+            dram_compare.append({"Station": st_name, "DRAM": "12G", "Qty": qty_12g})
             
-        df_comp = pd.DataFrame(dram_comp)
+        df_comp = pd.DataFrame(dram_compare)
+        
+        # 圖像化各站點 WIP 分佈
         fig_bar = px.bar(df_comp, x="Station", y="Qty", color="DRAM", barmode="group", text_auto='.2s')
         st.plotly_chart(fig_bar, use_container_width=True)
 
         # ---------------------------------------------------------
-        # 第三部分：出貨需求 (由 'Station -ship delta' 讀取)
+        # 3. 第三部分：Ship Demand (3/25 ~ 5/07)
         # ---------------------------------------------------------
         st.markdown("---")
-        st.subheader("📦 第三部分：出貨需求與 AI 風險分析")
+        st.subheader("📦 第三部分：Shipment Demand by DRAM & Shipping Place")
         
-        # 抓取 Demand (座標為 16G: Col 25,26 / 12G: Col 55,56)
-        d16 = df_delta.iloc[2:6, [25, 26]].dropna()
-        d16.columns = ["Date", "Qty"]; d16["DRAM"] = "16G"
-        d12 = df_delta.iloc[2:6, [55, 56]].dropna()
-        d12.columns = ["Date", "Qty"]; d12["DRAM"] = "12G"
+        # 16G Demand: Col 25(Date), 26(Qty), 27(Place/Accum) - 抓取 3/25 之後
+        d16 = df_delta.iloc[2:30, [25, 26, 27]].dropna(subset=[25])
+        d16.columns = ["Date", "Qty", "Place"]; d16["DRAM"] = "16G"
+        
+        # 12G Demand: Col 55(Date), 56(Qty), 57(Place/Accum)
+        d12 = df_delta.iloc[2:30, [55, 56, 57]].dropna(subset=[55])
+        d12.columns = ["Date", "Qty", "Place"]; d12["DRAM"] = "12G"
         
         df_demand = pd.concat([d16, d12])
-        df_demand["Qty"] = df_demand["Qty"].apply(clean_num)
+        df_demand["Qty"] = df_demand["Qty"].apply(to_num)
+        df_demand["Date"] = df_demand["Date"].astype(str)
         
-        col_L, col_R = st.columns([1, 1])
+        # 過濾掉非日期字串 (如 Accum.)
+        df_demand = df_demand[df_demand["Date"].str.contains('202|3/|4/|5/')]
+        
+        col_L, col_R = st.columns([1.5, 1])
         with col_L:
-            st.write("📋 未來出貨需求排程:")
-            fig_demand = px.bar(df_demand, x="Date", y="Qty", color="DRAM", barmode="group")
+            st.write("📊 未來出貨需求排程 (by Shipping Place):")
+            fig_demand = px.bar(df_demand, x="Date", y="Qty", color="DRAM", 
+                                pattern_shape="Place", barmode="stack", title="3/25 ~ 5/07 出貨預測")
             st.plotly_chart(fig_demand, use_container_width=True)
-            
+        
         with col_R:
-            st.info("🤖 **AI Agent 風險評估**")
-            # 抓取 FT1 的 16G 今日 WIP 與下一次需求比對
-            ft1_16g = df_comp[(df_comp["Station"]=="FT1") & (df_comp["DRAM"]=="16G")]["Qty"].sum()
-            target_16g = df_demand[df_demand["DRAM"]=="16G"]["Qty"].iloc[0]
+            st.write("📋 需求清單明細:")
+            st.dataframe(df_demand, use_container_width=True, height=400)
             
-            st.write(f"- **16G FT1 庫存**: {int(ft1_16g):,}")
-            st.write(f"- **下一次出貨需求**: {int(target_16g):,}")
+            # --- AI Agent Risk 評估 ---
+            st.info("🤖 **AI Risk 分析建議**")
+            total_16g_wip = df_comp[df_comp["DRAM"]=="16G"]["Qty"].sum()
+            target_16g_ship = df_demand[(df_demand["DRAM"]=="16G")]["Qty"].sum()
             
-            if ft1_16g < target_16g:
-                st.error(f"❌ **Risk**: 16G 在 FT1 的 WIP 不足以應付下次出貨。")
+            st.write(f"1. **當前 16G 總 WIP**: {int(total_16g_wip):,}")
+            st.write(f"2. **4月底前 16G 總需求**: {int(target_16g_ship):,}")
+            
+            if total_16g_wip < target_16g_ship:
+                st.error("🚨 **Risk detected**: 16G 庫存不足以支應至五月之出貨，請協調 OSAT 加班。")
             else:
-                st.success(f"✅ **Normal**: 現有庫存足以支應下次出貨。")
+                st.success("✅ **Normal**: 現有 16G 水位足以支應近期出貨。")
 
     except Exception as e:
-        st.error(f"解析發生問題：{e}")
-        st.write("請確保上傳的是原始 .xlsx 檔案且包含 WIP 與 Station -ship delta 分頁。")
+        st.error(f"系統解析失敗: {e}")
+        st.write("請確保上傳的檔案包含 'Station -ship delta' 分頁且格式符合 2026MP 範本。")
