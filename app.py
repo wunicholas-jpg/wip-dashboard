@@ -1,73 +1,78 @@
 import streamlit as st
 import pandas as pd
 
-# 設定網頁標題與寬度
-st.set_page_config(page_title="WIP 智能管理系統", layout="wide")
-st.title("🏭 OSAT ATE FT WIP 智能管理系統")
-st.markdown("### 第一階段：資料自動清洗與結構化 (ETL)")
+st.set_page_config(page_title="WIP & Demand 整合面板", layout="wide")
+st.title("📊 複合式 WIP 與出貨需求管理系統")
+st.markdown("這套系統能自動解析 OSAT 報表中的三段式結構 (WIP 趨勢 / DRAM 佔比 / 出貨 Demand)")
 
-# 1. 建立檔案上傳區塊 (同時支援 CSV 與 XLSX)
-uploaded_file = st.file_uploader("📥 請上傳 OSAT 提供的 WIP 檔案", type=['csv', 'xlsx'])
+# 建立檔案上傳區塊 (支援 xlsx 與 csv)
+uploaded_file = st.file_uploader("📥 請上傳包含三段資訊的 Excel 檔案", type=['xlsx', 'csv'])
 
 if uploaded_file is not None:
-    # ---------------------------------------------------------
-    # 模組 A：讀取原始資料
-    # ---------------------------------------------------------
-    st.subheader("🔍 1. 原始資料 (OSAT 匯出格式)")
-    
-    # 自動判斷副檔名來決定讀取方式
-    if uploaded_file.name.endswith('.csv'):
-        df_raw = pd.read_csv(uploaded_file)
-    else:
-        # 如果是 Excel，預設會讀取第一個 Sheet
-        df_raw = pd.read_excel(uploaded_file) 
-        
-    st.write("這是一張「寬表」，人類容易看，但 AI 和系統很難做加總與關聯分析：")
-    st.dataframe(df_raw.head(10), use_container_width=True)
+    try:
+        with st.spinner("資料解析與智慧分塊中..."):
+            # 讀取檔案，不預設 header，讓系統把整張表完整讀進來
+            if uploaded_file.name.endswith('.csv'):
+                df_all = pd.read_csv(uploaded_file, header=None)
+            else:
+                df_all = pd.read_excel(uploaded_file, header=None)
+            
+            # --- 關鍵技術：全表掃描尋找切分點 ---
+            # 設定我們預期的關鍵字 (您可依據真實 Excel 內的字眼在這裡微調)
+            mid_keywords = '16GB|12GB|D-Ram|機台配置|DRAM'
+            bottom_keywords = 'Accum|Ship|出貨|Demand|需求|Receiving'
+            
+            # 1. 尋找「中部」的起始列：掃描每一列，只要有出現 mid_keywords 就記錄下來
+            mid_start_idx = len(df_all)
+            mid_search = df_all[df_all.apply(lambda row: row.astype(str).str.contains(mid_keywords, case=False, na=False).any(), axis=1)].index
+            if len(mid_search) > 0:
+                mid_start_idx = mid_search[0]
+                
+            # 2. 尋找「下半部」的起始列：從中部之後開始掃描，尋找 bottom_keywords
+            bottom_start_idx = len(df_all)
+            bottom_search = df_all.iloc[mid_start_idx:][df_all.iloc[mid_start_idx:].apply(lambda row: row.astype(str).str.contains(bottom_keywords, case=False, na=False).any(), axis=1)].index
+            if len(bottom_search) > 0:
+                bottom_start_idx = bottom_search[0]
 
-    # ---------------------------------------------------------
-    # 模組 B：開始清洗資料
-    # ---------------------------------------------------------
-    st.subheader("✨ 2. 清洗後的資料 (AI 可讀的標準資料庫格式)")
-    
-    with st.spinner('資料清洗中...'):
-        # 1. 將第一欄重新命名為 'Station' (站點)
-        df_raw.rename(columns={df_raw.columns[0]: 'Station'}, inplace=True)
-        
-        # 2. 過濾掉不要的雜亂列
-        df_raw['Station'] = df_raw['Station'].astype(str)
-        exclude_keywords = ['Process Step', 'Sum', 'TTL', 'Cum', '機台配置', 'nan', 'NaN']
-        df_clean = df_raw[~df_raw['Station'].isin(exclude_keywords)].copy()
-        
-        # 3. 找出所有屬於「日期」的欄位 (簡單判斷欄位名稱是否有 '202' 年份)
-        date_cols = [col for col in df_clean.columns if '202' in str(col)]
-        
-        # 4. 關鍵轉換：用 melt 將「寬表」轉為「長表」(扁平化)
-        df_melted = df_clean.melt(
-            id_vars=['Station'], 
-            value_vars=date_cols, 
-            var_name='Date', 
-            value_name='WIP_Qty'
-        )
-        
-        # 5. 清理數值：把空值或無法轉換的字串變成 0
-        df_melted['WIP_Qty'] = pd.to_numeric(df_melted['WIP_Qty'], errors='coerce').fillna(0)
-        
-        # 6. 依據日期與站點排序，讓資料更整齊
-        df_melted = df_melted.sort_values(by=['Date', 'Station']).reset_index(drop=True)
+            # ---------------------------------------------------------
+            # 區塊 1：上半部 (歷史 WIP 趨勢 3/2~3/23)
+            # ---------------------------------------------------------
+            st.markdown("---")
+            st.markdown("### 📈 第一部分：站點 WIP 趨勢")
+            # 擷取 0 到 mid_start_idx 的資料，並清除全空的欄與列
+            df_top = df_all.iloc[0:mid_start_idx].dropna(how='all', axis=0).dropna(how='all', axis=1)
+            if not df_top.empty:
+                df_top.columns = df_top.iloc[0] # 將第一列設為表格標題
+                df_top = df_top[1:].reset_index(drop=True)
+                st.dataframe(df_top, use_container_width=True)
 
-    st.write("我們將矩陣轉換成了 `[站點, 日期, WIP數量]` 的標準格式，這也是未來丟給 AI Agent 的格式：")
-    st.dataframe(df_melted, use_container_width=True)
+            # ---------------------------------------------------------
+            # 區塊 2：中部 (當日 16G/12G WIP 狀態)
+            # ---------------------------------------------------------
+            if mid_start_idx < len(df_all):
+                st.markdown("---")
+                st.markdown("### 🗂️ 第二部分：當日 WIP 狀態 (By DRAM 16G/12G)")
+                df_mid = df_all.iloc[mid_start_idx:bottom_start_idx].dropna(how='all', axis=0).dropna(how='all', axis=1)
+                if not df_mid.empty:
+                    df_mid.columns = df_mid.iloc[0]
+                    df_mid = df_mid[1:].reset_index(drop=True)
+                    st.dataframe(df_mid, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # 模組 C：簡單視覺化驗證
-    # ---------------------------------------------------------
-    st.subheader("📊 3. 快速驗證：最新日期的各站點 WIP 狀況")
-    
-    latest_date = df_melted['Date'].max()
-    st.write(f"當前顯示日期：**{latest_date}**")
-    
-    df_latest = df_melted[(df_melted['Date'] == latest_date) & (df_melted['WIP_Qty'] > 0)]
-    st.bar_chart(data=df_latest, x='Station', y='WIP_Qty', use_container_width=True)
-    
-    st.success("🎉 資料清洗與轉換成功！這份乾淨的 DataFrame (df_melted) 已經準備好在下一步餵給 AI Agent 了。")
+            # ---------------------------------------------------------
+            # 區塊 3：下半部 (出貨 Demand)
+            # ---------------------------------------------------------
+            if bottom_start_idx < len(df_all):
+                st.markdown("---")
+                st.markdown("### 📦 第三部分：出貨需求與缺口 (Demand & Risk)")
+                df_bottom = df_all.iloc[bottom_start_idx:].dropna(how='all', axis=0).dropna(how='all', axis=1)
+                if not df_bottom.empty:
+                    df_bottom.columns = df_bottom.iloc[0]
+                    df_bottom = df_bottom[1:].reset_index(drop=True)
+                    st.dataframe(df_bottom, use_container_width=True)
+                    
+            st.success("🎉 成功將 OSAT 複合式報表切割為三個獨立資料庫！下一步即可導入圖表與 AI Agent。")
+
+    except Exception as e:
+        st.error(f"檔案解析發生錯誤：{e}")
+        st.warning("請確認 Excel 內容是否包含我們設定的關鍵字。以下是系統讀取到的原始資料全貌：")
+        st.dataframe(df_all, use_container_width=True)
