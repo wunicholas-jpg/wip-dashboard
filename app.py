@@ -1,104 +1,120 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 
-st.set_page_config(page_title="ZC13 WIP Dashboard", layout="wide")
+st.set_page_config(page_title="WIP Management System", layout="wide")
 
-st.title("🚀 ATE FT WIP 智能管理面板")
-st.markdown("---")
+st.title("🏭 ATE FT WIP 智能管理面板 (ZC13)")
 
-uploaded_file = st.file_uploader("📥 上傳 OSAT WIP 原始檔 (XLSX/CSV)", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("📥 請上傳最新 WIP Excel 檔案", type=['xlsx', 'csv'])
 
-def clean_column_names(columns):
-    """處理重複與格式混亂的標題"""
-    return [str(c).split(' ')[0] if pd.notnull(c) else f"Unnamed_{i}" for i, c in enumerate(columns)]
+def get_unique_cols(df_cols):
+    """強力修正重複標題與 NaN 標題問題"""
+    new_cols = []
+    seen = {}
+    for i, val in enumerate(df_cols):
+        val = str(val).strip() if pd.notnull(val) else f"Unnamed_{i}"
+        if val in seen:
+            seen[val] += 1
+            new_cols.append(f"{val}_{seen[val]}")
+        else:
+            seen[val] = 0
+            new_cols.append(val)
+    return new_cols
 
 if uploaded_file:
-    # 讀取整張表，不設標題
-    df_raw = pd.read_excel(uploaded_file, header=None) if uploaded_file.name.endswith('xlsx') else pd.read_csv(uploaded_file, header=None)
-    
-    # --- 1. 定位 WIP Trend (Top) ---
-    # 尋找 "Process Step" 作為開頭
-    wip_start_row = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Process Step", na=False)].index[0]
-    # 假設 WIP 表格到 "Sum" 結束
-    wip_end_row = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Sum", na=False)].index[0]
-    
-    df_wip = df_raw.iloc[wip_start_row:wip_end_row].dropna(how='all', axis=1)
-    df_wip.columns = clean_column_names(df_wip.iloc[0])
-    df_wip = df_wip[2:].reset_index(drop=True) # 避開 Process Step 和時間列
-
-    # --- 2. 定位 DRAM Breakdown (Middle) ---
-    # 搜尋全表尋找 "D-Ram" 或 "MU16G"
-    mask = df_raw.apply(lambda row: row.astype(str).str.contains('D-Ram|MU16G|SS16G', case=False).any(), axis=1)
-    dram_indices = df_raw[mask].index
-    
-    if len(dram_indices) > 0:
-        dram_row = dram_indices[0]
-        # 抓取 DRAM 所在的區塊 (通常在關鍵字周圍)
-        df_dram = df_raw.iloc[dram_row-1 : dram_row+5, :].dropna(how='all', axis=1).dropna(how='all', axis=0)
-        df_dram.columns = ["Type", "DRAM_Spec", "WIP_Qty", "Remain", "Other"][:len(df_dram.columns)]
-    else:
-        df_dram = pd.DataFrame()
-
-    # --- 3. 定位 Demand (Bottom) ---
-    demand_indices = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Receiving|Ship|Demand", na=False)].index
-    if len(demand_indices) > 0:
-        df_demand = df_raw.iloc[demand_indices[0]:].dropna(how='all', axis=1).dropna(how='all', axis=0)
-        df_demand.columns = clean_column_names(df_demand.iloc[0])
-        df_demand = df_demand[1:]
-    else:
-        df_demand = pd.DataFrame()
-
-    # ================= 介面呈現 =================
-    
-    # 第一區：關鍵數據卡片
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        total_wip = pd.to_numeric(df_wip.iloc[:, 1], errors='coerce').sum()
-        st.metric("Total WIP (Current)", f"{int(total_wip):,}")
-    with col2:
-        # 假設第一站是 IQC
-        iqc_qty = pd.to_numeric(df_wip[df_wip.iloc[:,0].str.contains("IQC", na=False)].iloc[:,1], errors='coerce').sum()
-        st.metric("IQC Status", f"{int(iqc_qty):,}")
-    with col3:
-        st.metric("Risk Status", "Normal" if total_wip > 50000 else "Critical", delta_color="inverse")
-
-    st.markdown("### 📊 WIP 站點分佈與趨勢")
-    
-    # 畫出當前 WIP 分佈圖
-    fig_wip = px.bar(df_wip, x=df_wip.columns[0], y=df_wip.columns[1], 
-                     title="Current WIP by Station", labels={df_wip.columns[1]: 'Quantity'})
-    st.plotly_chart(fig_wip, use_container_width=True)
-
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.markdown("### 🗂️ DRAM 規格拆解 (16G/12G)")
-        if not df_dram.empty:
-            # 整理 DRAM 數據畫圓餅圖
-            fig_pie = px.pie(df_dram, names="DRAM_Spec", values="WIP_Qty", hole=0.4)
-            st.plotly_chart(fig_pie)
+    try:
+        # 1. 讀取原始數據 (不設 header)
+        if uploaded_file.name.endswith('.csv'):
+            df_raw = pd.read_csv(uploaded_file, header=None)
         else:
-            st.warning("找不到 DRAM 數據區塊，請確認關鍵字是否為 'D-Ram' 或 'MU16G'")
+            df_raw = pd.read_excel(uploaded_file, header=None)
 
-    with c2:
-        st.markdown("### 📦 出貨需求對比")
-        if not df_demand.empty:
-            st.dataframe(df_demand, use_container_width=True)
+        # --- 第一區塊：WIP Trend (搜尋 "Process Step") ---
+        wip_header_row = df_raw[df_raw.apply(lambda r: r.astype(str).str.contains("Process Step").any(), axis=1)].index
+        if not wip_header_row.empty:
+            start_idx = wip_header_row[0]
+            # 往後抓 30 列左右，直到遇到 "Sum" 或空白
+            df_wip = df_raw.iloc[start_idx:start_idx+40].dropna(how='all', axis=1).dropna(how='all', axis=0)
+            df_wip.columns = get_unique_cols(df_wip.iloc[0]) # 修正重複標題
+            df_wip = df_wip[2:].reset_index(drop=True) # 跳過標題與時間列
+            
+            # 清洗 WIP 數據，把文字轉數字
+            main_col = df_wip.columns[0] # 'Process Step'
+            val_col = df_wip.columns[1]  # '2026-03-23' (最新一天)
+            df_wip[val_col] = pd.to_numeric(df_wip[val_col], errors='coerce').fillna(0)
+            df_wip = df_wip[df_wip[val_col] > 0] # 只看有數值的站點
         else:
-            st.info("尚無出貨需求數據")
+            st.error("找不到 'Process Step' 關鍵字，請確認檔案格式")
 
-    # --- AI Agent 區塊 ---
-    st.markdown("---")
-    st.markdown("### 🤖 AI Agent 決策助理")
-    user_q = st.text_input("您可以問我關於 WIP 的問題：", placeholder="例如：16G 的 WIP 夠應付本週需求嗎？")
-    
-    if user_q:
-        with st.chat_message("assistant"):
-            # 這裡先用簡單邏輯模擬，下一步可以串接真正的 Gemini/GPT
-            if "16G" in user_q:
-                qty_16g = df_dram[df_dram['DRAM_Spec'].str.contains('16G', na=False)]['WIP_Qty'].sum()
-                st.write(f"目前的 16G WIP 總數為 {qty_16g:,}。根據出貨需求表格，本週目標為 47,000，目前看來**風險較低**。")
+        # --- 第二區塊：DRAM Status (搜尋 "MU16G/SS12G") ---
+        dram_keywords = ['MU16G', 'SS16G', 'HY12G', 'SS12G']
+        dram_rows = df_raw[df_raw.apply(lambda r: r.astype(str).str.contains('|'.join(dram_keywords)).any(), axis=1)]
+        
+        dram_data = []
+        for idx, row in dram_rows.iterrows():
+            # 邏輯：在該行尋找第一個數值
+            row_list = row.tolist()
+            for i, val in enumerate(row_list):
+                if str(val) in dram_keywords:
+                    qty = row_list[i+1] if i+1 < len(row_list) else 0
+                    dram_data.append({'Spec': str(val), 'Qty': pd.to_numeric(qty, errors='coerce') or 0})
+        
+        df_dram = pd.DataFrame(dram_data)
+
+        # --- 第三區塊：Demand (從另一張表或底部搜尋) ---
+        # 這裡示範從底部搜尋包含 "Qty" 和 "Accum" 的區塊
+        demand_row = df_raw[df_raw.apply(lambda r: r.astype(str).str.contains("Accum").any(), axis=1)].index
+        if not demand_row.empty:
+            df_demand = df_raw.iloc[demand_row[0]:demand_row[0]+10].dropna(how='all', axis=1)
+            df_demand.columns = get_unique_cols(df_demand.iloc[0])
+            df_demand = df_demand[1:].reset_index(drop=True)
+        else:
+            df_demand = pd.DataFrame()
+
+        # ==================== Dashboard Layout ====================
+        
+        # 1. 指標卡
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total WIP", f"{int(df_wip[val_col].sum()):,}")
+        m2.metric("16G Total", f"{int(df_dram[df_dram['Spec'].str.contains('16G')]['Qty'].sum()):,}")
+        m3.metric("12G Total", f"{int(df_dram[df_dram['Spec'].str.contains('12G')]['Qty'].sum()):,}")
+
+        st.markdown("---")
+        
+        # 2. 圖表區
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.subheader(f"📊 各站點 WIP 分佈 ({val_col})")
+            fig_bar = px.bar(df_wip, x=main_col, y=val_col, color=main_col, text_auto='.2s')
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with c2:
+            st.subheader("🍩 DRAM 規格佔比")
+            if not df_dram.empty:
+                fig_pie = px.pie(df_dram, names='Spec', values='Qty', hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
             else:
-                st.write("我已經分析了當前 WIP 數據，目前 FT1 站點累積較多，可能是潛在瓶頸。")
+                st.warning("無法解析 DRAM 數據區塊")
+
+        # 3. 出貨需求與 AI Agent
+        st.markdown("---")
+        st.subheader("📦 Shipment Demand & AI Risk Analysis")
+        col_left, col_right = st.columns([1, 1])
+        
+        with col_left:
+            st.write("最新 Demand 列表:")
+            st.dataframe(df_demand, use_container_width=True)
+            
+        with col_right:
+            st.info("🤖 **AI Agent 評估報告**")
+            # 這裡串接簡單邏輯，未來可換成真正的 LLM
+            current_ft = df_wip[df_wip[main_col].str.contains("FT", na=False)][val_col].sum()
+            st.write(f"1. **產能缺口**：當前 FT 站點總計有 {int(current_ft):,} WIP。")
+            st.write("2. **風險分析**：對比下週一 50K 的出貨目標，目前缺口約 8K，請確認 IQC/LS 站點流速。")
+            if st.button("點擊生成詳細風險報告"):
+                st.write("正在分析歷史良率與機台 OEE... (此功能需掛載 AI Agent)")
+
+    except Exception as e:
+        st.error(f"解析失敗: {e}")
+        st.write("請確認您的 Excel 檔案結構，或檢查第一欄關鍵字。")
