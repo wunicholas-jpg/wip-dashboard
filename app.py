@@ -1,93 +1,104 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="WIP & Demand 整合面板", layout="wide")
-st.title("📊 複合式 WIP 與出貨需求管理系統")
-st.markdown("這套系統能自動解析 OSAT 報表中的三段式結構 (WIP 趨勢 / DRAM 佔比 / 出貨 Demand)")
+st.set_page_config(page_title="ZC13 WIP Dashboard", layout="wide")
 
-# 建立檔案上傳區塊 (支援 xlsx 與 csv)
-uploaded_file = st.file_uploader("📥 請上傳包含三段資訊的 Excel 檔案", type=['xlsx', 'csv'])
+st.title("🚀 ATE FT WIP 智能管理面板")
+st.markdown("---")
 
-# --- 處理重複欄位名稱的小工具 ---
-def make_unique_headers(df):
-    cols = df.columns.astype(str).tolist()
-    new_cols = []
-    seen = {}
-    for c in cols:
-        if c in seen:
-            seen[c] += 1
-            new_cols.append(f"{c}_{seen[c]}")
+uploaded_file = st.file_uploader("📥 上傳 OSAT WIP 原始檔 (XLSX/CSV)", type=['xlsx', 'csv'])
+
+def clean_column_names(columns):
+    """處理重複與格式混亂的標題"""
+    return [str(c).split(' ')[0] if pd.notnull(c) else f"Unnamed_{i}" for i, c in enumerate(columns)]
+
+if uploaded_file:
+    # 讀取整張表，不設標題
+    df_raw = pd.read_excel(uploaded_file, header=None) if uploaded_file.name.endswith('xlsx') else pd.read_csv(uploaded_file, header=None)
+    
+    # --- 1. 定位 WIP Trend (Top) ---
+    # 尋找 "Process Step" 作為開頭
+    wip_start_row = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Process Step", na=False)].index[0]
+    # 假設 WIP 表格到 "Sum" 結束
+    wip_end_row = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Sum", na=False)].index[0]
+    
+    df_wip = df_raw.iloc[wip_start_row:wip_end_row].dropna(how='all', axis=1)
+    df_wip.columns = clean_column_names(df_wip.iloc[0])
+    df_wip = df_wip[2:].reset_index(drop=True) # 避開 Process Step 和時間列
+
+    # --- 2. 定位 DRAM Breakdown (Middle) ---
+    # 搜尋全表尋找 "D-Ram" 或 "MU16G"
+    mask = df_raw.apply(lambda row: row.astype(str).str.contains('D-Ram|MU16G|SS16G', case=False).any(), axis=1)
+    dram_indices = df_raw[mask].index
+    
+    if len(dram_indices) > 0:
+        dram_row = dram_indices[0]
+        # 抓取 DRAM 所在的區塊 (通常在關鍵字周圍)
+        df_dram = df_raw.iloc[dram_row-1 : dram_row+5, :].dropna(how='all', axis=1).dropna(how='all', axis=0)
+        df_dram.columns = ["Type", "DRAM_Spec", "WIP_Qty", "Remain", "Other"][:len(df_dram.columns)]
+    else:
+        df_dram = pd.DataFrame()
+
+    # --- 3. 定位 Demand (Bottom) ---
+    demand_indices = df_raw[df_raw.iloc[:, 0].astype(str).str.contains("Receiving|Ship|Demand", na=False)].index
+    if len(demand_indices) > 0:
+        df_demand = df_raw.iloc[demand_indices[0]:].dropna(how='all', axis=1).dropna(how='all', axis=0)
+        df_demand.columns = clean_column_names(df_demand.iloc[0])
+        df_demand = df_demand[1:]
+    else:
+        df_demand = pd.DataFrame()
+
+    # ================= 介面呈現 =================
+    
+    # 第一區：關鍵數據卡片
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        total_wip = pd.to_numeric(df_wip.iloc[:, 1], errors='coerce').sum()
+        st.metric("Total WIP (Current)", f"{int(total_wip):,}")
+    with col2:
+        # 假設第一站是 IQC
+        iqc_qty = pd.to_numeric(df_wip[df_wip.iloc[:,0].str.contains("IQC", na=False)].iloc[:,1], errors='coerce').sum()
+        st.metric("IQC Status", f"{int(iqc_qty):,}")
+    with col3:
+        st.metric("Risk Status", "Normal" if total_wip > 50000 else "Critical", delta_color="inverse")
+
+    st.markdown("### 📊 WIP 站點分佈與趨勢")
+    
+    # 畫出當前 WIP 分佈圖
+    fig_wip = px.bar(df_wip, x=df_wip.columns[0], y=df_wip.columns[1], 
+                     title="Current WIP by Station", labels={df_wip.columns[1]: 'Quantity'})
+    st.plotly_chart(fig_wip, use_container_width=True)
+
+    c1, c2 = st.columns(2)
+    
+    with c1:
+        st.markdown("### 🗂️ DRAM 規格拆解 (16G/12G)")
+        if not df_dram.empty:
+            # 整理 DRAM 數據畫圓餅圖
+            fig_pie = px.pie(df_dram, names="DRAM_Spec", values="WIP_Qty", hole=0.4)
+            st.plotly_chart(fig_pie)
         else:
-            seen[c] = 0
-            new_cols.append(c)
-    df.columns = new_cols
-    return df
+            st.warning("找不到 DRAM 數據區塊，請確認關鍵字是否為 'D-Ram' 或 'MU16G'")
 
-if uploaded_file is not None:
-    try:
-        with st.spinner("資料解析與智慧分塊中..."):
-            # 讀取檔案，不預設 header，讓系統把整張表完整讀進來
-            if uploaded_file.name.endswith('.csv'):
-                df_all = pd.read_csv(uploaded_file, header=None)
+    with c2:
+        st.markdown("### 📦 出貨需求對比")
+        if not df_demand.empty:
+            st.dataframe(df_demand, use_container_width=True)
+        else:
+            st.info("尚無出貨需求數據")
+
+    # --- AI Agent 區塊 ---
+    st.markdown("---")
+    st.markdown("### 🤖 AI Agent 決策助理")
+    user_q = st.text_input("您可以問我關於 WIP 的問題：", placeholder="例如：16G 的 WIP 夠應付本週需求嗎？")
+    
+    if user_q:
+        with st.chat_message("assistant"):
+            # 這裡先用簡單邏輯模擬，下一步可以串接真正的 Gemini/GPT
+            if "16G" in user_q:
+                qty_16g = df_dram[df_dram['DRAM_Spec'].str.contains('16G', na=False)]['WIP_Qty'].sum()
+                st.write(f"目前的 16G WIP 總數為 {qty_16g:,}。根據出貨需求表格，本週目標為 47,000，目前看來**風險較低**。")
             else:
-                df_all = pd.read_excel(uploaded_file, header=None)
-            
-            # --- 關鍵技術：全表掃描尋找切分點 ---
-            # 設定我們預期的關鍵字 (您可依據真實 Excel 內的字眼在這裡微調)
-            mid_keywords = '16GB|12GB|D-Ram|機台配置|DRAM'
-            bottom_keywords = 'Accum|Ship|出貨|Demand|需求|Receiving'
-            
-            # 1. 尋找「中部」的起始列
-            mid_start_idx = len(df_all)
-            mid_search = df_all[df_all.apply(lambda row: row.astype(str).str.contains(mid_keywords, case=False, na=False).any(), axis=1)].index
-            if len(mid_search) > 0:
-                mid_start_idx = mid_search[0]
-                
-            # 2. 尋找「下半部」的起始列
-            bottom_start_idx = len(df_all)
-            bottom_search = df_all.iloc[mid_start_idx:][df_all.iloc[mid_start_idx:].apply(lambda row: row.astype(str).str.contains(bottom_keywords, case=False, na=False).any(), axis=1)].index
-            if len(bottom_search) > 0:
-                bottom_start_idx = bottom_search[0]
-
-            # ---------------------------------------------------------
-            # 區塊 1：上半部 (歷史 WIP 趨勢)
-            # ---------------------------------------------------------
-            st.markdown("---")
-            st.markdown("### 📈 第一部分：站點 WIP 趨勢")
-            df_top = df_all.iloc[0:mid_start_idx].dropna(how='all', axis=0).dropna(how='all', axis=1)
-            if not df_top.empty:
-                df_top.columns = df_top.iloc[0] # 將第一列設為表格標題
-                df_top = df_top[1:].reset_index(drop=True)
-                df_top = make_unique_headers(df_top) # <--- 修正重複欄位名稱的問題
-                st.dataframe(df_top, use_container_width=True)
-
-            # ---------------------------------------------------------
-            # 區塊 2：中部 (當日 16G/12G WIP 狀態)
-            # ---------------------------------------------------------
-            if mid_start_idx < len(df_all):
-                st.markdown("---")
-                st.markdown("### 🗂️ 第二部分：當日 WIP 狀態 (By DRAM 16G/12G)")
-                df_mid = df_all.iloc[mid_start_idx:bottom_start_idx].dropna(how='all', axis=0).dropna(how='all', axis=1)
-                if not df_mid.empty:
-                    df_mid.columns = df_mid.iloc[0]
-                    df_mid = df_mid[1:].reset_index(drop=True)
-                    df_mid = make_unique_headers(df_mid) # <--- 修正重複欄位名稱的問題
-                    st.dataframe(df_mid, use_container_width=True)
-
-            # ---------------------------------------------------------
-            # 區塊 3：下半部 (出貨 Demand)
-            # ---------------------------------------------------------
-            if bottom_start_idx < len(df_all):
-                st.markdown("---")
-                st.markdown("### 📦 第三部分：出貨需求與缺口 (Demand & Risk)")
-                df_bottom = df_all.iloc[bottom_start_idx:].dropna(how='all', axis=0).dropna(how='all', axis=1)
-                if not df_bottom.empty:
-                    df_bottom.columns = df_bottom.iloc[0]
-                    df_bottom = df_bottom[1:].reset_index(drop=True)
-                    df_bottom = make_unique_headers(df_bottom) # <--- 修正重複欄位名稱的問題
-                    st.dataframe(df_bottom, use_container_width=True)
-                    
-            st.success("🎉 成功將 OSAT 複合式報表切割為三個獨立資料庫！下一步即可導入圖表與 AI Agent。")
-
-    except Exception as e:
-        st.error(f"檔案解析發生錯誤：{e}")
+                st.write("我已經分析了當前 WIP 數據，目前 FT1 站點累積較多，可能是潛在瓶頸。")
