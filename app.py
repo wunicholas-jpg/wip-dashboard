@@ -85,7 +85,7 @@ if uploaded_file:
             df_demand = pd.DataFrame(demand_rows)
 
         # =========================================================
-        # 💬 TOP SECTION: Strategic AI Data Interrogator
+        # 💬 TOP SECTION: Interactive AI Data Interrogator
         # =========================================================
         st.subheader("💬 Strategic AI Data Interrogator")
         user_query = st.text_input("Ask about WIP status or Shipment gaps:", placeholder="e.g., Summary of SS16G inventory risk.")
@@ -96,7 +96,7 @@ if uploaded_file:
         st.markdown("---")
 
         # =========================================================
-        # Part 1: Historical WIP Evolution (Last 7 Days)
+        # Part 1: History
         # =========================================================
         if "History_WIP" in xls.sheet_names:
             st.subheader("📈 Part 1: WIP Historical Trends (Last 7 Days)")
@@ -127,7 +127,7 @@ if uploaded_file:
             st.plotly_chart(fig_c, use_container_width=True)
 
         # =========================================================
-        # Part 3: Shipment Requirement (Aggregated Tabs)
+        # Part 3: Shipment Requirement (Total Tabs Added)
         # =========================================================
         st.markdown("---")
         if not df_demand.empty:
@@ -148,14 +148,14 @@ if uploaded_file:
                     st.plotly_chart(fig_tab, use_container_width=True)
 
         # =========================================================
-        # Part 4: AI Agent Analysis (PACK + MP Ship Logic)
+        # Part 4: AI Agent Analysis (PACK + MP Ship Stock Logic)
         # =========================================================
         st.markdown("---")
         st.error("🤖 AI Agent: Shipment Gap Analysis (Inventory Runway)")
-        st.caption("Initial Stock = PACK Qty + MP Ship Qty")
+        st.caption("Initial Stock = Sum of PACK Qty and MP Ship Qty")
         
         if not df_curr.empty and not df_demand.empty:
-            # logic: Sum of PACK and MP Ship
+            # CORRECTED LOGIC: PACK + MP Ship
             ship_ready_stock = df_curr[df_curr["Station"].isin(["PACK", "MP Ship"])].groupby("DRAM Type")["Qty"].sum().to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
             
@@ -169,16 +169,25 @@ if uploaded_file:
                     old_bal = current_runway
                     current_runway -= d_qty
                     status = "✅ Sufficient" if current_runway >= 0 else f"🚨 GAP: {int(abs(current_runway)):,}"
-                    analysis_results.append({"Ship Date": d_date, "Initial Stock": int(old_bal), "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status})
+                    analysis_results.append({
+                        "Ship Date": d_date, "Initial Stock": int(old_bal), 
+                        "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status
+                    })
                 
                 if analysis_results:
                     res_df = pd.DataFrame(analysis_results)
-                    summary_row = pd.DataFrame([{"Ship Date": "GRAND TOTAL", "Initial Stock": res_df["Initial Stock"].iloc[0], "Demand Qty": res_df["Demand Qty"].sum(), "End Balance": res_df["End Balance"].iloc[-1], "Status": "N/A"}])
+                    summary_row = pd.DataFrame([{
+                        "Ship Date": "GRAND TOTAL",
+                        "Initial Stock": res_df["Initial Stock"].iloc[0],
+                        "Demand Qty": res_df["Demand Qty"].sum(),
+                        "End Balance": res_df["End Balance"].iloc[-1],
+                        "Status": "N/A"
+                    }])
                     res_df_final = pd.concat([res_df, summary_row], ignore_index=True)
 
                     c1, c2 = st.columns([2, 1])
                     with c1:
-                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Balance Forecast (PACK + MP Ship)")
+                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Stock Runway (PACK + MP Ship)")
                         fig_runway.update_traces(marker_color=res_df["End Balance"].apply(lambda x: G_RED if x < 0 else G_BLUE))
                         fig_runway.update_xaxes(type='category')
                         st.plotly_chart(fig_runway, use_container_width=True)
@@ -187,7 +196,10 @@ if uploaded_file:
                             color = G_RED if '🚨' in str(val) else 'black'
                             weight = 'bold' if val == 'GRAND TOTAL' else 'normal'
                             return f'color: {color}; font-weight: {weight}'
-                        st.table(res_df_final.style.applymap(style_gap))
+                        
+                        # --- FIXED ERROR HERE: Use .map instead of .applymap ---
+                        st.table(res_df_final.style.map(style_gap))
+                else: st.write(f"No active requirements for {spec}.")
 
     except Exception as e:
         st.error(f"Analysis Failed: {e}")
