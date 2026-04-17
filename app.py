@@ -3,14 +3,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- 1. Global Configuration & Professional Palette ---
+# --- 1. Global Configuration & UI Styling ---
 st.set_page_config(page_title="KYEC WIP E2E Management Dashboard", layout="wide")
 
-G_BLUE = "#4285F4"
-G_GREEN = "#34A853"
-G_YELLOW = "#FBBC05"
-G_GRAY = "#70757a"
-G_RED = "#EA4335"
+G_BLUE = "#4285F4"   # Google Blue
+G_GREEN = "#34A853"  # Google Green
+G_YELLOW = "#FBBC05" # Google Yellow
+G_GRAY = "#70757a"   # Google Gray
+G_RED = "#EA4335"    # Alert Red
 
 DRAM_COLORS = {"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY}
 
@@ -27,7 +27,7 @@ def to_num(x):
     except: return 0.0
 
 def clean_date_str(d):
-    """Rigorous date formatting to ensure YYYY-MM-DD only"""
+    """Rigorous date formatting for all charts and tables"""
     try:
         return pd.to_datetime(d).strftime('%Y-%m-%d')
     except:
@@ -39,12 +39,11 @@ st.markdown("---")
 # 0) Production Flow Visualization
 st.markdown("### 🔄 Production Flow: End-to-End Process")
 flow_html = f"""
-<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; padding: 20px; background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;">
-    {"".join([f'<div style="background: {G_BLUE}; color: white; padding: 10px 15px; border-radius: 5px; font-weight: bold; font-size: 13px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);">{s}</div>' + (' <b style="color: #4285F4; font-size: 18px;">➔</b> ' if i < len(FLOW_STATIONS)-1 else '') for i, s in enumerate(FLOW_STATIONS)])}
+<div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; padding: 15px; background: #ffffff; border: 1px solid #e0e0e0; border-radius: 8px;">
+    {"".join([f'<div style="background: {G_BLUE}; color: white; padding: 10px 15px; border-radius: 5px; font-weight: bold; font-size: 13px; box-shadow: 1px 1px 3px rgba(0,0,0,0.1);">{s}</div>' + (' <b style="color: #4285F4; font-size: 16px;">➔</b> ' if i < len(FLOW_STATIONS)-1 else '') for i, s in enumerate(FLOW_STATIONS)])}
 </div>
 """
 st.markdown(flow_html, unsafe_allow_html=True)
-st.markdown("---")
 
 uploaded_file = st.file_uploader("📥 Upload ZC13 WIP Master File (.xlsx)", type=['xlsx'])
 
@@ -53,12 +52,20 @@ if uploaded_file:
         xls = pd.ExcelFile(uploaded_file)
         specs = ["MU16G", "SS16G", "HY12G", "SS12G"]
         
-        # --- Pre-calculate Data for UI ---
+        # --- Data Parsing Engine ---
         df_curr = pd.DataFrame()
         df_demand = pd.DataFrame()
+        as_of_date = ""
 
         if "Current_WIP" in xls.sheet_names:
             df_c_raw = pd.read_excel(xls, sheet_name="Current_WIP", header=None)
+            # Try to extract "Today's Date" from cell A1
+            try:
+                raw_date_cell = str(df_c_raw.iloc[0, 0])
+                as_of_date = clean_date_str(raw_date_cell.split(':')[-1].strip())
+            except:
+                as_of_date = clean_date_str(pd.Timestamp.now())
+            
             curr_data = []
             for i in range(len(df_c_raw)):
                 label = str(df_c_raw.iloc[i, 0]).strip()
@@ -85,13 +92,14 @@ if uploaded_file:
             df_demand = pd.DataFrame(demand_rows)
 
         # =========================================================
-        # 💬 TOP SECTION: Interactive AI Data Interrogator
+        # 💬 TOP SECTION: Strategic AI Data Interrogator
         # =========================================================
         st.subheader("💬 Strategic AI Data Interrogator")
-        user_query = st.text_input("Ask about WIP status or Shipment gaps:", placeholder="e.g., Summary of SS16G inventory risk.")
+        user_query = st.text_input("Ask about bottlenecks, gaps, or shipment status:", placeholder="e.g., Which DRAM is the highest risk?")
         if user_query:
             with st.chat_message("assistant"):
-                st.write("🔍 **Rule-based Insight:** I am now calculating inventory based on the combined stock of **PACK + MP Ship**. This provides a more accurate runway for your upcoming shipments.")
+                st.write(f"🔍 **Data Insight:** Analysis based on Current WIP as of **{as_of_date}**. "
+                         "I am evaluating inventory by combining **PACK + MP Ship** for shipment fulfillment.")
 
         st.markdown("---")
 
@@ -110,7 +118,7 @@ if uploaded_file:
                     h_list.append([name, sum(vals)] + vals)
             df_hist_full = pd.DataFrame(h_list, columns=["Station", "Total_Sum"] + h_dates)
             recent_dates = h_dates[:7]
-            selected = st.multiselect("Select Stations:", df_hist_full["Station"].unique(), default=df_hist_full.sort_values("Total_Sum", ascending=False).head(5)["Station"].tolist())
+            selected = st.multiselect("Filter Stations:", df_hist_full["Station"].unique(), default=df_hist_full.sort_values("Total_Sum", ascending=False).head(5)["Station"].tolist())
             df_melt = df_hist_full[df_hist_full["Station"].isin(selected)][["Station"] + recent_dates].melt(id_vars="Station", var_name="Date", value_name="Qty")
             fig_h = px.bar(df_melt, x="Date", y="Qty", color="Station", barmode="group", color_discrete_sequence=[G_BLUE, G_GREEN, G_YELLOW, G_GRAY, "#9C27B0"])
             fig_h.update_xaxes(type='category')
@@ -127,11 +135,27 @@ if uploaded_file:
             st.plotly_chart(fig_c, use_container_width=True)
 
         # =========================================================
-        # Part 3: Shipment Requirement (Total Tabs Added)
+        # Part 3: Shipment Requirement & Accumulation Chart
         # =========================================================
         st.markdown("---")
         if not df_demand.empty:
-            st.subheader("📦 Part 3: Shipment Requirement Analysis")
+            st.subheader("📦 Part 3: Shipment Requirement & Progress")
+            
+            # 1. New Feature: Cumulative Shipment Progress Chart
+            st.markdown("#### 📊 Cumulative Shipment Progress (Accumulated vs. Total)")
+            df_prog = df_demand.copy()
+            df_prog["Status"] = df_prog["Date"].apply(lambda x: "Accumulated Shipped" if x <= as_of_date else "Remaining Plan")
+            
+            # Aggregate by DRAM and Status
+            df_prog_agg = df_prog.groupby(["DRAM Type", "Status"])["Qty"].sum().reset_index()
+            
+            fig_prog = px.bar(df_prog_agg, x="DRAM Type", y="Qty", color="Status", 
+                             title=f"Total Fulfillment Progress (As of {as_of_date})",
+                             color_discrete_map={"Accumulated Shipped": G_GREEN, "Remaining Plan": G_GRAY},
+                             text_auto='.3s')
+            st.plotly_chart(fig_prog, use_container_width=True)
+
+            # 2. Detailed Tabs
             df_demand["Category"] = df_demand["DRAM Type"].apply(lambda x: "16G Total" if "16" in x else "12G Total")
             df_agg = df_demand.groupby(["Date", "Category"])["Qty"].sum().reset_index()
             tab_list = specs + ["16G Total", "12G Total"]
@@ -148,14 +172,14 @@ if uploaded_file:
                     st.plotly_chart(fig_tab, use_container_width=True)
 
         # =========================================================
-        # Part 4: AI Agent Analysis (PACK + MP Ship Stock Logic)
+        # Part 4: AI Agent Analysis (PACK + MP Ship Logic)
         # =========================================================
         st.markdown("---")
         st.error("🤖 AI Agent: Shipment Gap Analysis (Inventory Runway)")
-        st.caption("Initial Stock = Sum of PACK Qty and MP Ship Qty")
+        st.caption("Calculation Logic: Initial Stock = PACK Qty + MP Ship Qty")
         
         if not df_curr.empty and not df_demand.empty:
-            # CORRECTED LOGIC: PACK + MP Ship
+            # CORRECTED LOGIC: Use sum of PACK and MP Ship as ready inventory
             ship_ready_stock = df_curr[df_curr["Station"].isin(["PACK", "MP Ship"])].groupby("DRAM Type")["Qty"].sum().to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
             
@@ -169,25 +193,16 @@ if uploaded_file:
                     old_bal = current_runway
                     current_runway -= d_qty
                     status = "✅ Sufficient" if current_runway >= 0 else f"🚨 GAP: {int(abs(current_runway)):,}"
-                    analysis_results.append({
-                        "Ship Date": d_date, "Initial Stock": int(old_bal), 
-                        "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status
-                    })
+                    analysis_results.append({"Ship Date": d_date, "Initial Stock": int(old_bal), "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status})
                 
                 if analysis_results:
                     res_df = pd.DataFrame(analysis_results)
-                    summary_row = pd.DataFrame([{
-                        "Ship Date": "GRAND TOTAL",
-                        "Initial Stock": res_df["Initial Stock"].iloc[0],
-                        "Demand Qty": res_df["Demand Qty"].sum(),
-                        "End Balance": res_df["End Balance"].iloc[-1],
-                        "Status": "N/A"
-                    }])
+                    summary_row = pd.DataFrame([{"Ship Date": "GRAND TOTAL", "Initial Stock": res_df["Initial Stock"].iloc[0], "Demand Qty": res_df["Demand Qty"].sum(), "End Balance": res_df["End Balance"].iloc[-1], "Status": "N/A"}])
                     res_df_final = pd.concat([res_df, summary_row], ignore_index=True)
 
                     c1, c2 = st.columns([2, 1])
                     with c1:
-                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Stock Runway (PACK + MP Ship)")
+                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Forecast (PACK + MP Ship)")
                         fig_runway.update_traces(marker_color=res_df["End Balance"].apply(lambda x: G_RED if x < 0 else G_BLUE))
                         fig_runway.update_xaxes(type='category')
                         st.plotly_chart(fig_runway, use_container_width=True)
@@ -197,7 +212,7 @@ if uploaded_file:
                             weight = 'bold' if val == 'GRAND TOTAL' else 'normal'
                             return f'color: {color}; font-weight: {weight}'
                         
-                        # --- FIXED ERROR HERE: Use .map instead of .applymap ---
+                        # --- Pandas 2.x Compatibility: use .map instead of .applymap ---
                         st.table(res_df_final.style.map(style_gap))
                 else: st.write(f"No active requirements for {spec}.")
 
