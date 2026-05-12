@@ -127,33 +127,32 @@ if uploaded_file:
             st.plotly_chart(fig_h, use_container_width=True)
 
         # =========================================================
-        # Part 2: Current Status & MP Ship Feature
+        # Part 2: Current Status & MP Ship Feature (上下排列優化版)
         # =========================================================
         st.markdown("---")
         if not df_curr.empty:
             st.subheader("🗂️ Part 2: Current WIP & MP Ship Distribution")
             
-            c1, c2 = st.columns([1, 1])
+            # 1. 滿版顯示 Full Pipeline 分佈 (上方)
+            st.markdown("#### 📊 Full Pipeline WIP Distribution")
+            df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
+            fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
+            st.plotly_chart(fig_c, use_container_width=True)
             
-            with c1:
-                st.markdown("#### 📊 Full Pipeline WIP Distribution")
-                df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
-                fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
-                st.plotly_chart(fig_c, use_container_width=True)
+            st.markdown("<br>", unsafe_allow_html=True) # 增加上下間距
             
-            with c2:
-                # 【新功能】：單獨撈取 MP Ship 站點，包含個別 DRAM 與 ALL Total 放在同一張圖
-                st.markdown("#### 🚢 Current MP Ship Volume (By DRAM & ALL Total)")
-                df_mp = df_curr[df_curr["Station"] == "MP Ship"].copy()
-                if not df_mp.empty:
-                    df_mp_total = pd.DataFrame([{"DRAM Type": "ALL Total", "Station": "MP Ship", "Qty": df_mp["Qty"].sum()}])
-                    df_mp_chart = pd.concat([df_mp, df_mp_total], ignore_index=True)
-                    
-                    fig_mp = px.bar(df_mp_chart, x="DRAM Type", y="Qty", text_auto='.3s',
-                                    color="DRAM Type",
-                                    color_discrete_map={"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY, "ALL Total": G_PURPLE},
-                                    title="Ready-to-Ship Finished Goods Stock")
-                    st.plotly_chart(fig_mp, use_container_width=True)
+            # 2. 滿版顯示 MP Ship 成品量 (下方)
+            st.markdown("#### 🚢 Current MP Ship Volume (By DRAM & ALL Total)")
+            df_mp = df_curr[df_curr["Station"] == "MP Ship"].copy()
+            if not df_mp.empty:
+                df_mp_total = pd.DataFrame([{"DRAM Type": "ALL Total", "Station": "MP Ship", "Qty": df_mp["Qty"].sum()}])
+                df_mp_chart = pd.concat([df_mp, df_mp_total], ignore_index=True)
+                
+                fig_mp = px.bar(df_mp_chart, x="DRAM Type", y="Qty", text_auto='.3s',
+                                color="DRAM Type",
+                                color_discrete_map={"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY, "ALL Total": G_PURPLE},
+                                title="Ready-to-Ship Finished Goods Stock")
+                st.plotly_chart(fig_mp, use_container_width=True)
 
         # =========================================================
         # Part 3: Shipment Requirement & Progress
