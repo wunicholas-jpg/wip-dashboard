@@ -11,6 +11,7 @@ G_GREEN = "#34A853"  # Google Green
 G_YELLOW = "#FBBC05" # Google Yellow
 G_GRAY = "#70757a"   # Google Gray
 G_RED = "#EA4335"    # Alert Red
+G_PURPLE = "#673AB7" # Grand Total Purple
 
 DRAM_COLORS = {"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY}
 
@@ -77,7 +78,7 @@ if uploaded_file:
         if "Ship Demand" in xls.sheet_names:
             df_d_raw = pd.read_excel(xls, sheet_name="Ship Demand", header=None)
             
-            # 【關鍵修復】：將 3:12 改為 3:，動態讀取至最後一欄，完美納入 5/21, 5/28, 6/4
+            # Dynamic date scanning (unlimited column expansion)
             d_dates = [clean_date_str(d) for d in df_d_raw.iloc[3, 3:] if pd.notnull(d)]
             
             demand_rows = []
@@ -104,7 +105,7 @@ if uploaded_file:
                          f"The full timeline expansion up to **{max(d_dates) if d_dates else 'N/A'}** has been loaded successfully.")
 
         # =========================================================
-        # Part 1: History
+        # Part 1: Historical WIP Trends
         # =========================================================
         st.markdown("---")
         if "History_WIP" in xls.sheet_names:
@@ -126,14 +127,33 @@ if uploaded_file:
             st.plotly_chart(fig_h, use_container_width=True)
 
         # =========================================================
-        # Part 2: Current Status
+        # Part 2: Current Status & MP Ship Feature
         # =========================================================
         st.markdown("---")
         if not df_curr.empty:
-            st.subheader("🗂️ Part 2: Current WIP Distribution")
-            df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
-            fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
-            st.plotly_chart(fig_c, use_container_width=True)
+            st.subheader("🗂️ Part 2: Current WIP & MP Ship Distribution")
+            
+            c1, c2 = st.columns([1, 1])
+            
+            with c1:
+                st.markdown("#### 📊 Full Pipeline WIP Distribution")
+                df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
+                fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
+                st.plotly_chart(fig_c, use_container_width=True)
+            
+            with c2:
+                # 【新功能】：單獨撈取 MP Ship 站點，包含個別 DRAM 與 ALL Total 放在同一張圖
+                st.markdown("#### 🚢 Current MP Ship Volume (By DRAM & ALL Total)")
+                df_mp = df_curr[df_curr["Station"] == "MP Ship"].copy()
+                if not df_mp.empty:
+                    df_mp_total = pd.DataFrame([{"DRAM Type": "ALL Total", "Station": "MP Ship", "Qty": df_mp["Qty"].sum()}])
+                    df_mp_chart = pd.concat([df_mp, df_mp_total], ignore_index=True)
+                    
+                    fig_mp = px.bar(df_mp_chart, x="DRAM Type", y="Qty", text_auto='.3s',
+                                    color="DRAM Type",
+                                    color_discrete_map={"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY, "ALL Total": G_PURPLE},
+                                    title="Ready-to-Ship Finished Goods Stock")
+                    st.plotly_chart(fig_mp, use_container_width=True)
 
         # =========================================================
         # Part 3: Shipment Requirement & Progress
@@ -142,7 +162,6 @@ if uploaded_file:
         if not df_demand.empty:
             st.subheader("📦 Part 3: Shipment Requirement & Progress")
             
-            # --- FEATURE 1: ALL-DRAM Cumulative Progress ---
             st.markdown("#### 📊 Cumulative Shipment Progress (Individual vs. ALL Total)")
             df_prog = df_demand.copy()
             df_prog["Status"] = df_prog["Date"].apply(lambda x: "Accumulated Shipped" if x <= as_of_date else "Remaining Plan")
@@ -158,7 +177,7 @@ if uploaded_file:
                              text_auto='.3s', barmode='stack')
             st.plotly_chart(fig_prog, use_container_width=True)
 
-            # --- FEATURE 2: GRAND Total Tab ---
+            # Detailed Tabs
             df_demand["Category"] = df_demand["DRAM Type"].apply(lambda x: "16G Total" if "16" in x else "12G Total")
             df_agg = df_demand.groupby(["Date", "Category"])["Qty"].sum().reset_index()
             df_grand = df_demand.groupby("Date")["Qty"].sum().reset_index()
@@ -171,7 +190,7 @@ if uploaded_file:
                     if "Total" in tab_name:
                         if tab_name == "GRAND Total":
                             df_tab = df_grand
-                            color_val = "#673AB7" # Purple for Grand Total
+                            color_val = G_PURPLE
                         else:
                             df_tab = df_agg[df_agg["Category"] == tab_name]
                             color_val = G_BLUE if "16G" in tab_name else G_YELLOW
