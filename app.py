@@ -59,7 +59,6 @@ if uploaded_file:
 
         if "Current_WIP" in xls.sheet_names:
             df_c_raw = pd.read_excel(xls, sheet_name="Current_WIP", header=None)
-            # Try to extract "Today's Date" from cell A1
             try:
                 raw_date_cell = str(df_c_raw.iloc[0, 0])
                 as_of_date = clean_date_str(raw_date_cell.split(':')[-1].strip())
@@ -77,7 +76,10 @@ if uploaded_file:
 
         if "Ship Demand" in xls.sheet_names:
             df_d_raw = pd.read_excel(xls, sheet_name="Ship Demand", header=None)
-            d_dates = [clean_date_str(d) for d in df_d_raw.iloc[3, 3:12] if pd.notnull(d)]
+            
+            # 【關鍵修復】：將 3:12 改為 3:，動態讀取至最後一欄，完美納入 5/21, 5/28, 6/4
+            d_dates = [clean_date_str(d) for d in df_d_raw.iloc[3, 3:] if pd.notnull(d)]
+            
             demand_rows = []
             current_spec = ""
             for i in range(4, len(df_d_raw)):
@@ -95,17 +97,16 @@ if uploaded_file:
         # 💬 TOP SECTION: Strategic AI Data Interrogator
         # =========================================================
         st.subheader("💬 Strategic AI Data Interrogator")
-        user_query = st.text_input("Ask about bottlenecks, gaps, or shipment status:", placeholder="e.g., Which DRAM is the highest risk?")
+        user_query = st.text_input("Ask about bottlenecks, gaps, or total shipment status:", placeholder="e.g., Which DRAM is the highest risk?")
         if user_query:
             with st.chat_message("assistant"):
-                st.write(f"🔍 **Data Insight:** Analysis based on Current WIP as of **{as_of_date}**. "
-                         "I am evaluating inventory by combining **PACK + MP Ship** for shipment fulfillment.")
-
-        st.markdown("---")
+                st.write(f"🔍 **Data Insight:** Analyzing all 4 DRAM variants as of **{as_of_date}**. "
+                         f"The full timeline expansion up to **{max(d_dates) if d_dates else 'N/A'}** has been loaded successfully.")
 
         # =========================================================
         # Part 1: History
         # =========================================================
+        st.markdown("---")
         if "History_WIP" in xls.sheet_names:
             st.subheader("📈 Part 1: WIP Historical Trends (Last 7 Days)")
             df_h = pd.read_excel(xls, sheet_name="History_WIP", header=None)
@@ -135,39 +136,54 @@ if uploaded_file:
             st.plotly_chart(fig_c, use_container_width=True)
 
         # =========================================================
-        # Part 3: Shipment Requirement & Accumulation Chart
+        # Part 3: Shipment Requirement & Progress
         # =========================================================
         st.markdown("---")
         if not df_demand.empty:
             st.subheader("📦 Part 3: Shipment Requirement & Progress")
             
-            # 1. New Feature: Cumulative Shipment Progress Chart
-            st.markdown("#### 📊 Cumulative Shipment Progress (Accumulated vs. Total)")
+            # --- FEATURE 1: ALL-DRAM Cumulative Progress ---
+            st.markdown("#### 📊 Cumulative Shipment Progress (Individual vs. ALL Total)")
             df_prog = df_demand.copy()
             df_prog["Status"] = df_prog["Date"].apply(lambda x: "Accumulated Shipped" if x <= as_of_date else "Remaining Plan")
             
-            # Aggregate by DRAM and Status
-            df_prog_agg = df_prog.groupby(["DRAM Type", "Status"])["Qty"].sum().reset_index()
+            df_prog_indiv = df_prog.groupby(["DRAM Type", "Status"])["Qty"].sum().reset_index()
+            df_all_total = df_prog.groupby("Status")["Qty"].sum().reset_index()
+            df_all_total["DRAM Type"] = "ALL Total"
+            df_prog_final = pd.concat([df_prog_indiv, df_all_total], ignore_index=True)
             
-            fig_prog = px.bar(df_prog_agg, x="DRAM Type", y="Qty", color="Status", 
-                             title=f"Total Fulfillment Progress (As of {as_of_date})",
+            fig_prog = px.bar(df_prog_final, x="DRAM Type", y="Qty", color="Status", 
+                             title=f"Fulfillment Progress (As of {as_of_date})",
                              color_discrete_map={"Accumulated Shipped": G_GREEN, "Remaining Plan": G_GRAY},
-                             text_auto='.3s')
+                             text_auto='.3s', barmode='stack')
             st.plotly_chart(fig_prog, use_container_width=True)
 
-            # 2. Detailed Tabs
+            # --- FEATURE 2: GRAND Total Tab ---
             df_demand["Category"] = df_demand["DRAM Type"].apply(lambda x: "16G Total" if "16" in x else "12G Total")
             df_agg = df_demand.groupby(["Date", "Category"])["Qty"].sum().reset_index()
-            tab_list = specs + ["16G Total", "12G Total"]
+            df_grand = df_demand.groupby("Date")["Qty"].sum().reset_index()
+            df_grand["Category"] = "GRAND Total"
+            
+            tab_list = specs + ["16G Total", "12G Total", "GRAND Total"]
             d_tabs = st.tabs(tab_list)
             for i, tab_name in enumerate(tab_list):
                 with d_tabs[i]:
                     if "Total" in tab_name:
-                        df_tab = df_agg[df_agg["Category"] == tab_name]
-                        fig_tab = px.bar(df_tab, x="Date", y="Qty", text_auto='.3s', color_discrete_sequence=[G_BLUE if "16G" in tab_name else G_YELLOW], title=f"Consolidated Demand: {tab_name}")
+                        if tab_name == "GRAND Total":
+                            df_tab = df_grand
+                            color_val = "#673AB7" # Purple for Grand Total
+                        else:
+                            df_tab = df_agg[df_agg["Category"] == tab_name]
+                            color_val = G_BLUE if "16G" in tab_name else G_YELLOW
+                        
+                        fig_tab = px.bar(df_tab, x="Date", y="Qty", text_auto='.3s', 
+                                        color_discrete_sequence=[color_val], 
+                                        title=f"Consolidated Demand: {tab_name}")
                     else:
                         df_tab = df_demand[df_demand["DRAM Type"] == tab_name]
-                        fig_tab = px.bar(df_tab, x="Date", y="Qty", color="Place", barmode="group", text_auto='.3s', color_discrete_map={"FIHCN": G_BLUE, "FIHVN": G_GREEN, "HKDC": G_YELLOW}, title=f"Detailed Demand: {tab_name}")
+                        fig_tab = px.bar(df_tab, x="Date", y="Qty", color="Place", barmode="group", text_auto='.3s',
+                                        color_discrete_map={"FIHCN": G_BLUE, "FIHVN": G_GREEN, "HKDC": G_YELLOW},
+                                        title=f"Detailed Demand: {tab_name}")
                     fig_tab.update_xaxes(type='category')
                     st.plotly_chart(fig_tab, use_container_width=True)
 
@@ -179,7 +195,6 @@ if uploaded_file:
         st.caption("Calculation Logic: Initial Stock = PACK Qty + MP Ship Qty")
         
         if not df_curr.empty and not df_demand.empty:
-            # CORRECTED LOGIC: Use sum of PACK and MP Ship as ready inventory
             ship_ready_stock = df_curr[df_curr["Station"].isin(["PACK", "MP Ship"])].groupby("DRAM Type")["Qty"].sum().to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
             
@@ -212,9 +227,9 @@ if uploaded_file:
                             weight = 'bold' if val == 'GRAND TOTAL' else 'normal'
                             return f'color: {color}; font-weight: {weight}'
                         
-                        # --- Pandas 2.x Compatibility: use .map instead of .applymap ---
                         st.table(res_df_final.style.map(style_gap))
-                else: st.write(f"No active requirements for {spec}.")
+                else:
+                    st.write(f"No active requirements for {spec}.")
 
     except Exception as e:
         st.error(f"Analysis Failed: {e}")
