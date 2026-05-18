@@ -21,6 +21,9 @@ FLOW_STATIONS = [
     "Bake", "T&R", "FQC", "PACK", "MP Ship"
 ]
 
+# 定義後段衝刺段站點，用於 Part 4 庫存推算
+BACKEND_RUNWAY_STATIONS = ["Bake", "T&R", "FQC", "PACK", "MP Ship"]
+
 def to_num(x):
     try:
         if pd.isna(x) or str(x).strip() in ['', '#REF!', 'None', 'NaN']: return 0.0
@@ -78,7 +81,7 @@ if uploaded_file:
         if "Ship Demand" in xls.sheet_names:
             df_d_raw = pd.read_excel(xls, sheet_name="Ship Demand", header=None)
             
-            # Dynamic date scanning (unlimited column expansion)
+            # Dynamic date scanning (unlimited column expansion for ZC13 WIP 2026MP_Mod_8.xlsx)
             d_dates = [clean_date_str(d) for d in df_d_raw.iloc[3, 3:] if pd.notnull(d)]
             
             demand_rows = []
@@ -98,11 +101,11 @@ if uploaded_file:
         # 💬 TOP SECTION: Strategic AI Data Interrogator
         # =========================================================
         st.subheader("💬 Strategic AI Data Interrogator")
-        user_query = st.text_input("Ask about bottlenecks, gaps, or total shipment status:", placeholder="e.g., Which DRAM is the highest risk?")
+        user_query = st.text_input("Ask about bottlenecks, gaps, or total shipment status:", placeholder="e.g., Summary of SS12G runway risk.")
         if user_query:
             with st.chat_message("assistant"):
                 st.write(f"🔍 **Data Insight:** Analyzing all 4 DRAM variants as of **{as_of_date}**. "
-                         f"The full timeline expansion up to **{max(d_dates) if d_dates else 'N/A'}** has been loaded successfully.")
+                         f"Fulfillment logic has been upgraded to scan the entire last-mile pipeline (**Bake/TR/FQC/Pack/MP Ship**).")
 
         # =========================================================
         # Part 1: Historical WIP Trends
@@ -127,21 +130,21 @@ if uploaded_file:
             st.plotly_chart(fig_h, use_container_width=True)
 
         # =========================================================
-        # Part 2: Current Status & MP Ship Feature (上下排列優化版)
+        # Part 2: Current Status & MP Ship Feature (上下滿版排列)
         # =========================================================
         st.markdown("---")
         if not df_curr.empty:
             st.subheader("🗂️ Part 2: Current WIP & MP Ship Distribution")
             
-            # 1. 滿版顯示 Full Pipeline 分佈 (上方)
+            # 1. Full Pipeline 分佈
             st.markdown("#### 📊 Full Pipeline WIP Distribution")
             df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
             fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
             st.plotly_chart(fig_c, use_container_width=True)
             
-            st.markdown("<br>", unsafe_allow_html=True) # 增加上下間距
+            st.markdown("<br>", unsafe_allow_html=True)
             
-            # 2. 滿版顯示 MP Ship 成品量 (下方)
+            # 2. MP Ship 成品量
             st.markdown("#### 🚢 Current MP Ship Volume (By DRAM & ALL Total)")
             df_mp = df_curr[df_curr["Station"] == "MP Ship"].copy()
             if not df_mp.empty:
@@ -206,36 +209,53 @@ if uploaded_file:
                     st.plotly_chart(fig_tab, use_container_width=True)
 
         # =========================================================
-        # Part 4: AI Agent Analysis (PACK + MP Ship Logic)
+        # Part 4: AI Agent Analysis (Bake -> MP Ship Pipeline Logic)
         # =========================================================
         st.markdown("---")
         st.error("🤖 AI Agent: Shipment Gap Analysis (Inventory Runway)")
-        st.caption("Calculation Logic: Initial Stock = PACK Qty + MP Ship Qty")
+        
+        # 動態顯示目前的庫存公式，方便生產會議時核對
+        st.caption("💡 核心推算公式：Initial Stock = Bake + T&R + FQC + PACK + MP Ship 站點在製量總和")
         
         if not df_curr.empty and not df_demand.empty:
-            ship_ready_stock = df_curr[df_curr["Station"].isin(["PACK", "MP Ship"])].groupby("DRAM Type")["Qty"].sum().to_dict()
+            # 【核心修復點】：篩選擴大至最後五站，並依 DRAM 型號進行加總
+            ship_ready_stock = df_curr[df_curr["Station"].isin(BACKEND_RUNWAY_STATIONS)].groupby("DRAM Type")["Qty"].sum().to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
             
             for spec in specs:
                 st.markdown(f"#### 🔍 Runway Analysis: {spec}")
+                
+                # 取得該規格在後段五站的初始總庫存
                 current_runway = ship_ready_stock.get(spec, 0)
                 analysis_results = []
+                
                 for d_date in unique_dates:
                     d_qty = df_demand[(df_demand["Date"] == d_date) & (df_demand["DRAM Type"] == spec)]["Qty"].sum()
                     if d_qty == 0: continue
                     old_bal = current_runway
                     current_runway -= d_qty
                     status = "✅ Sufficient" if current_runway >= 0 else f"🚨 GAP: {int(abs(current_runway)):,}"
-                    analysis_results.append({"Ship Date": d_date, "Initial Stock": int(old_bal), "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status})
+                    analysis_results.append({
+                        "Ship Date": d_date, "Initial Stock": int(old_bal), 
+                        "Demand Qty": int(d_qty), "End Balance": int(current_runway), "Status": status
+                    })
                 
                 if analysis_results:
                     res_df = pd.DataFrame(analysis_results)
-                    summary_row = pd.DataFrame([{"Ship Date": "GRAND TOTAL", "Initial Stock": res_df["Initial Stock"].iloc[0], "Demand Qty": res_df["Demand Qty"].sum(), "End Balance": res_df["End Balance"].iloc[-1], "Status": "N/A"}])
+                    summary_row = pd.DataFrame([{
+                        "Ship Date": "GRAND TOTAL", 
+                        "Initial Stock": res_df["Initial Stock"].iloc[0], 
+                        "Demand Qty": res_df["Demand Qty"].sum(), 
+                        "End Balance": res_df["End Balance"].iloc[-1], 
+                        "Status": "N/A"
+                    }])
                     res_df_final = pd.concat([res_df, summary_row], ignore_index=True)
 
                     c1, c2 = st.columns([2, 1])
                     with c1:
-                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', title=f"{spec} Forecast (PACK + MP Ship)")
+                        # 圖表標題同步更新反映五站總和
+                        fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', 
+                                            title=f"{spec} Forecast (Bake/TR/FQC/PACK/MP Ship)")
                         fig_runway.update_traces(marker_color=res_df["End Balance"].apply(lambda x: G_RED if x < 0 else G_BLUE))
                         fig_runway.update_xaxes(type='category')
                         st.plotly_chart(fig_runway, use_container_width=True)
