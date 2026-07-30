@@ -6,14 +6,24 @@ import plotly.graph_objects as go
 # --- 1. Global Configuration & UI Styling ---
 st.set_page_config(page_title="KYEC WIP E2E Management Dashboard", layout="wide")
 
-G_BLUE = "#4285F4"   # Google Blue
-G_GREEN = "#34A853"  # Google Green
-G_YELLOW = "#FBBC05" # Google Yellow
-G_GRAY = "#70757a"   # Google Gray
+G_BLUE = "#4285F4"   # 16G Google Blue
+G_GREEN = "#34A853"  # 16G Google Green
+G_YELLOW = "#FBBC05" # 12G Google Yellow
+G_GRAY = "#70757a"   # 12G Google Gray
 G_RED = "#EA4335"    # Alert Red
 G_PURPLE = "#673AB7" # Grand Total Purple
+G_CYAN = "#00BCD4"   # 8G Cyan
+G_ORANGE = "#FF9800" # 8G Orange
 
-DRAM_COLORS = {"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY}
+# 擴充 8G DRAM 專屬顏色對應
+DRAM_COLORS = {
+    "MU16G": G_BLUE, 
+    "SS16G": G_GREEN, 
+    "HY12G": G_YELLOW, 
+    "SS12G": G_GRAY,
+    "MU8G": G_CYAN,
+    "SS8G": G_ORANGE
+}
 
 FLOW_STATIONS = [
     "Receiving", "IQC", "LS1 QC1", "FT CORR", "FT1", "LS QC2", 
@@ -21,7 +31,6 @@ FLOW_STATIONS = [
     "Bake", "T&R", "FQC", "PACK", "MP Ship"
 ]
 
-# 定義後段衝刺段站點，用於 Part 4 庫存推算
 BACKEND_RUNWAY_STATIONS = ["Bake", "T&R", "FQC", "PACK", "MP Ship"]
 
 def to_num(x):
@@ -54,7 +63,10 @@ uploaded_file = st.file_uploader("📥 Upload ZC13 WIP Master File (.xlsx)", typ
 if uploaded_file:
     try:
         xls = pd.ExcelFile(uploaded_file)
-        specs = ["MU16G", "SS16G", "HY12G", "SS12G"]
+        
+        # --- NEW: Added 8GB Specs & New Shipping Place ---
+        specs = ["MU16G", "SS16G", "HY12G", "SS12G", "MU8G", "SS8G"]
+        VALID_PLACES = ["FIHCN", "FIHVN", "HKDC", "COMPAL VN"]
         
         # --- Data Parsing Engine ---
         df_curr = pd.DataFrame()
@@ -80,8 +92,6 @@ if uploaded_file:
 
         if "Ship Demand" in xls.sheet_names:
             df_d_raw = pd.read_excel(xls, sheet_name="Ship Demand", header=None)
-            
-            # Dynamic date scanning (unlimited column expansion for ZC13 WIP 2026MP_Mod_8.xlsx)
             d_dates = [clean_date_str(d) for d in df_d_raw.iloc[3, 3:] if pd.notnull(d)]
             
             demand_rows = []
@@ -90,7 +100,9 @@ if uploaded_file:
                 row_spec = str(df_d_raw.iloc[i, 1]).strip()
                 if row_spec in specs: current_spec = row_spec
                 place = str(df_d_raw.iloc[i, 2]).strip()
-                if place in ["FIHCN", "FIHVN", "HKDC"]:
+                
+                # 確保是有效的出貨地，防止抓到加總行(Count/TTL)
+                if place in VALID_PLACES:
                     for idx, d_date in enumerate(d_dates):
                         qty = to_num(df_d_raw.iloc[i, 3+idx])
                         if qty > 0:
@@ -101,11 +113,11 @@ if uploaded_file:
         # 💬 TOP SECTION: Strategic AI Data Interrogator
         # =========================================================
         st.subheader("💬 Strategic AI Data Interrogator")
-        user_query = st.text_input("Ask about bottlenecks, gaps, or total shipment status:", placeholder="e.g., Summary of SS12G runway risk.")
+        user_query = st.text_input("Ask about bottlenecks, gaps, or total shipment status:", placeholder="e.g., Which DRAM is the highest risk?")
         if user_query:
             with st.chat_message("assistant"):
-                st.write(f"🔍 **Data Insight:** Analyzing all 4 DRAM variants as of **{as_of_date}**. "
-                         f"Fulfillment logic has been upgraded to scan the entire last-mile pipeline (**Bake/TR/FQC/Pack/MP Ship**).")
+                st.write(f"🔍 **Data Insight:** Analyzing all **6 DRAM variants (16G/12G/8G)** as of **{as_of_date}**. "
+                         f"Fulfillment logic scans the entire last-mile pipeline (**Bake/TR/FQC/Pack/MP Ship**).")
 
         # =========================================================
         # Part 1: Historical WIP Trends
@@ -124,19 +136,21 @@ if uploaded_file:
             df_hist_full = pd.DataFrame(h_list, columns=["Station", "Total_Sum"] + h_dates)
             recent_dates = h_dates[:7]
             selected = st.multiselect("Filter Stations:", df_hist_full["Station"].unique(), default=df_hist_full.sort_values("Total_Sum", ascending=False).head(5)["Station"].tolist())
+            
+            # 加入新的配色支援多色彩
+            color_seq = [G_BLUE, G_GREEN, G_YELLOW, G_GRAY, G_CYAN, G_ORANGE, "#9C27B0", "#E91E63"]
             df_melt = df_hist_full[df_hist_full["Station"].isin(selected)][["Station"] + recent_dates].melt(id_vars="Station", var_name="Date", value_name="Qty")
-            fig_h = px.bar(df_melt, x="Date", y="Qty", color="Station", barmode="group", color_discrete_sequence=[G_BLUE, G_GREEN, G_YELLOW, G_GRAY, "#9C27B0"])
+            fig_h = px.bar(df_melt, x="Date", y="Qty", color="Station", barmode="group", color_discrete_sequence=color_seq)
             fig_h.update_xaxes(type='category')
             st.plotly_chart(fig_h, use_container_width=True)
 
         # =========================================================
-        # Part 2: Current Status & MP Ship Feature (上下滿版排列)
+        # Part 2: Current Status & MP Ship Feature
         # =========================================================
         st.markdown("---")
         if not df_curr.empty:
             st.subheader("🗂️ Part 2: Current WIP & MP Ship Distribution")
             
-            # 1. Full Pipeline 分佈
             st.markdown("#### 📊 Full Pipeline WIP Distribution")
             df_curr['Station'] = pd.Categorical(df_curr['Station'], categories=FLOW_STATIONS, ordered=True)
             fig_c = px.bar(df_curr.sort_values('Station'), x="Station", y="Qty", color="DRAM Type", color_discrete_map=DRAM_COLORS, barmode="group", text_auto='.2s')
@@ -144,16 +158,18 @@ if uploaded_file:
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # 2. MP Ship 成品量
             st.markdown("#### 🚢 Current MP Ship Volume (By DRAM & ALL Total)")
             df_mp = df_curr[df_curr["Station"] == "MP Ship"].copy()
             if not df_mp.empty:
                 df_mp_total = pd.DataFrame([{"DRAM Type": "ALL Total", "Station": "MP Ship", "Qty": df_mp["Qty"].sum()}])
                 df_mp_chart = pd.concat([df_mp, df_mp_total], ignore_index=True)
                 
+                mp_colors = DRAM_COLORS.copy()
+                mp_colors["ALL Total"] = G_PURPLE
+                
                 fig_mp = px.bar(df_mp_chart, x="DRAM Type", y="Qty", text_auto='.3s',
                                 color="DRAM Type",
-                                color_discrete_map={"MU16G": G_BLUE, "SS16G": G_GREEN, "HY12G": G_YELLOW, "SS12G": G_GRAY, "ALL Total": G_PURPLE},
+                                color_discrete_map=mp_colors,
                                 title="Ready-to-Ship Finished Goods Stock")
                 st.plotly_chart(fig_mp, use_container_width=True)
 
@@ -179,23 +195,40 @@ if uploaded_file:
                              text_auto='.3s', barmode='stack')
             st.plotly_chart(fig_prog, use_container_width=True)
 
-            # Detailed Tabs
-            df_demand["Category"] = df_demand["DRAM Type"].apply(lambda x: "16G Total" if "16" in x else "12G Total")
+            # --- 新增 8G Total 自動分類機制 ---
+            def get_category(dram):
+                if "16" in dram: return "16G Total"
+                elif "12" in dram: return "12G Total"
+                elif "8" in dram: return "8G Total"
+                return "Other"
+                
+            df_demand["Category"] = df_demand["DRAM Type"].apply(get_category)
             df_agg = df_demand.groupby(["Date", "Category"])["Qty"].sum().reset_index()
             df_grand = df_demand.groupby("Date")["Qty"].sum().reset_index()
             df_grand["Category"] = "GRAND Total"
             
-            tab_list = specs + ["16G Total", "12G Total", "GRAND Total"]
+            # 建立多重分頁
+            tab_list = specs + ["16G Total", "12G Total", "8G Total", "GRAND Total"]
             d_tabs = st.tabs(tab_list)
+            
+            # 加入 COMPAL VN (仁寶越南) 的地理顏色識別
+            place_colors = {"FIHCN": G_BLUE, "FIHVN": G_GREEN, "HKDC": G_YELLOW, "COMPAL VN": G_CYAN}
+            
             for i, tab_name in enumerate(tab_list):
                 with d_tabs[i]:
                     if "Total" in tab_name:
                         if tab_name == "GRAND Total":
                             df_tab = df_grand
                             color_val = G_PURPLE
-                        else:
+                        elif "16G" in tab_name:
                             df_tab = df_agg[df_agg["Category"] == tab_name]
-                            color_val = G_BLUE if "16G" in tab_name else G_YELLOW
+                            color_val = G_BLUE
+                        elif "12G" in tab_name:
+                            df_tab = df_agg[df_agg["Category"] == tab_name]
+                            color_val = G_YELLOW
+                        elif "8G" in tab_name:
+                            df_tab = df_agg[df_agg["Category"] == tab_name]
+                            color_val = G_CYAN
                         
                         fig_tab = px.bar(df_tab, x="Date", y="Qty", text_auto='.3s', 
                                         color_discrete_sequence=[color_val], 
@@ -203,7 +236,7 @@ if uploaded_file:
                     else:
                         df_tab = df_demand[df_demand["DRAM Type"] == tab_name]
                         fig_tab = px.bar(df_tab, x="Date", y="Qty", color="Place", barmode="group", text_auto='.3s',
-                                        color_discrete_map={"FIHCN": G_BLUE, "FIHVN": G_GREEN, "HKDC": G_YELLOW},
+                                        color_discrete_map=place_colors,
                                         title=f"Detailed Demand: {tab_name}")
                     fig_tab.update_xaxes(type='category')
                     st.plotly_chart(fig_tab, use_container_width=True)
@@ -213,19 +246,14 @@ if uploaded_file:
         # =========================================================
         st.markdown("---")
         st.error("🤖 AI Agent: Shipment Gap Analysis (Inventory Runway)")
-        
-        # 動態顯示目前的庫存公式，方便生產會議時核對
         st.caption("💡 核心推算公式：Initial Stock = Bake + T&R + FQC + PACK + MP Ship 站點在製量總和")
         
         if not df_curr.empty and not df_demand.empty:
-            # 【核心修復點】：篩選擴大至最後五站，並依 DRAM 型號進行加總
             ship_ready_stock = df_curr[df_curr["Station"].isin(BACKEND_RUNWAY_STATIONS)].groupby("DRAM Type")["Qty"].sum().to_dict()
             unique_dates = sorted(df_demand["Date"].unique())
             
             for spec in specs:
                 st.markdown(f"#### 🔍 Runway Analysis: {spec}")
-                
-                # 取得該規格在後段五站的初始總庫存
                 current_runway = ship_ready_stock.get(spec, 0)
                 analysis_results = []
                 
@@ -253,7 +281,6 @@ if uploaded_file:
 
                     c1, c2 = st.columns([2, 1])
                     with c1:
-                        # 圖表標題同步更新反映五站總和
                         fig_runway = px.bar(res_df, x="Ship Date", y="End Balance", text_auto='.2s', 
                                             title=f"{spec} Forecast (Bake/TR/FQC/PACK/MP Ship)")
                         fig_runway.update_traces(marker_color=res_df["End Balance"].apply(lambda x: G_RED if x < 0 else G_BLUE))
